@@ -13,7 +13,7 @@ impl Default for ExportDialogState {
     fn default() -> Self {
         ExportDialogState {
             open: false,
-            file_name: "mixdown".to_string(),
+            file_name: "Untitled Project".to_string(),
         }
     }
 }

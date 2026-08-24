@@ -54,7 +54,7 @@ pub fn load_wav(path: &Path, target_sample_rate_hz: u32) -> Option<(Vec<f32>, u8
     Some((resample_linear(&mono, spec.sample_rate, target_sample_rate_hz), 1))
 }
 
-fn resample_linear(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
+pub(crate) fn resample_linear(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
     if input.is_empty() || from_hz == to_hz {
         return input.to_vec();
     }

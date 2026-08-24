@@ -264,6 +264,7 @@ fn trimmed_audio_can_be_dragged_back_out() {
 fn mute_range_silences_only_the_given_span() {
     let mut project = project_with_one_track();
     let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
     let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 10]).unwrap();
 
     project.mute_range(clip_id, 3, 6);
@@ -293,6 +294,7 @@ fn apply_gain_scales_and_clamps_samples() {
 fn fade_in_ramps_from_silence_to_full_and_is_monotonic() {
     let mut project = project_with_one_track();
     let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
     let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 5]).unwrap();
 
     project.apply_fade_in(clip_id);
@@ -310,6 +312,7 @@ fn fade_in_ramps_from_silence_to_full_and_is_monotonic() {
 fn fade_out_ramps_from_full_to_silence() {
     let mut project = project_with_one_track();
     let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
     let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 5]).unwrap();
 
     project.apply_fade_out(clip_id);
@@ -426,7 +429,9 @@ fn add_clip_channels_sets_track_channel_count_from_first_clip() {
 fn add_clip_channels_converts_mismatched_input_to_the_track_s_existing_channel_count() {
     let mut project = project_with_one_track();
     let track_id = project.tracks[0].id;
-    // First clip fixes the track at mono.
+    // Force the track to mono (tracks default to stereo) so a stereo clip
+    // added afterwards has to be downmixed to match.
+    project.track_mut(track_id).unwrap().channels = 1;
     project.add_clip_channels(track_id, "mono".into(), 0, vec![1.0; 4], 1);
     // A stereo clip added afterwards is downmixed to match.
     project.add_clip_channels(track_id, "stereo".into(), 10, vec![1.0, 0.0, 1.0, 0.0], 2);
@@ -478,6 +483,9 @@ fn merge_track_with_below_creates_one_stereo_track() {
     let mut project = project_with_one_track();
     let top_id = project.tracks[0].id;
     let bottom_id = project.add_track();
+    // Tracks default to stereo; force both to mono, as merge requires.
+    project.track_mut(top_id).unwrap().channels = 1;
+    project.track_mut(bottom_id).unwrap().channels = 1;
     project.add_clip(top_id, "l".into(), 0, vec![0.6, 0.6]).unwrap();
     project.add_clip(bottom_id, "r".into(), 0, vec![-0.3, -0.3]).unwrap();
 

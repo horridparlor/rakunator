@@ -1,6 +1,7 @@
 use crate::audio_engine::AudioEngine;
 use crate::project::{ClipId, Project, TrackId};
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Vec2};
+use std::collections::HashMap;
 
 use super::{ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_STEP};
 
@@ -9,6 +10,11 @@ use super::{ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_STEP};
 const DEFAULT_PX_PER_SAMPLE: f32 = 480.0 / 48_000.0;
 const MIN_PX_PER_SAMPLE: f32 = 0.0005;
 const MAX_PX_PER_SAMPLE: f32 = 2.0;
+/// How far a track's waveform can be vertically (amplitude) zoomed in, so
+/// quiet passages become visible — purely a display scale, never touches
+/// the actual audio or the mix.
+const MIN_VERTICAL_ZOOM: f32 = 1.0;
+const MAX_VERTICAL_ZOOM: f32 = 20.0;
 /// How close (in pixels) a drag has to start to a clip's edge to trim it
 /// instead of moving it.
 const EDGE_GRAB_PX: f32 = 12.0;
@@ -24,11 +30,6 @@ pub struct TimelineState {
     pub tracks_top_y: f32,
     /// Where cut/copy/paste should target next: last clicked track+sample.
     pub last_click: Option<(TrackId, u64)>,
-    /// An Alt-dragged sub-range selection (from Ctrl+L's "mute this
-    /// portion" or a ranged fade), one entry per clip it touches — it can
-    /// span the end of one clip and the start of the next few. Persisted
-    /// until the user drags a new one.
-    pub range_selections: Vec<(ClipId, u64, u64)>,
     /// Screen-space x of every lane's left edge, measured last frame (the
     /// ruler, drawn before the lanes, reuses this so its ticks and playhead
     /// line stay pixel-aligned with the lanes below it).
@@ -41,6 +42,9 @@ pub struct TimelineState {
     /// the clip currently being dragged.
     snap_indicator: Option<u64>,
     drag: Option<DragState>,
+    /// Per-track waveform vertical (amplitude) zoom, set by Shift+scrolling
+    /// over a track's lane. Missing entries default to 1.0 (unzoomed).
+    vertical_zoom: HashMap<TrackId, f32>,
 }
 
 impl Default for TimelineState {
@@ -50,11 +54,11 @@ impl Default for TimelineState {
             scroll_x_samples: 0.0,
             tracks_top_y: 0.0,
             last_click: None,
-            range_selections: Vec::new(),
             lane_left_x: None,
             marquee_anchor: None,
             snap_indicator: None,
             drag: None,
+            vertical_zoom: HashMap::new(),
         }
     }
 }
@@ -93,6 +97,12 @@ impl TimelineState {
         self.lane_left_x
             .map(|left| left + (sample as f32 - self.scroll_x_samples) * self.px_per_sample)
     }
+
+    /// `track_id`'s waveform vertical (amplitude) zoom factor — 1.0 if it's
+    /// never been Shift-scrolled.
+    fn vertical_zoom(&self, track_id: TrackId) -> f32 {
+        self.vertical_zoom.get(&track_id).copied().unwrap_or(1.0)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -100,13 +110,10 @@ enum DragMode {
     Move { duplicate: bool },
     TrimStart,
     TrimEnd,
-    RangeSelect { anchor_sample: u64 },
 }
 
 struct DragState {
-    /// `None` for a range-select drag started on empty lane space (not
-    /// tied to any particular clip).
-    clip_id: Option<ClipId>,
+    clip_id: ClipId,
     origin_track: TrackId,
     len_samples: u64,
     grab_offset_samples: i64,
@@ -120,20 +127,6 @@ struct ClipSnapshot {
     len_samples: u64,
     channels: u8,
     samples: Vec<f32>,
-}
-
-/// Clips a `[lo, hi)` range-select drag to every clip in `clips` it
-/// overlaps, e.g. the tail of one clip and the head of the next few.
-fn overlapping_range_selections(clips: &[ClipSnapshot], lo: u64, hi: u64) -> Vec<(ClipId, u64, u64)> {
-    let mut out = Vec::new();
-    for c in clips {
-        let clip_lo = lo.max(c.start_sample);
-        let clip_hi = hi.min(c.start_sample + c.len_samples);
-        if clip_hi > clip_lo {
-            out.push((c.id, clip_lo, clip_hi));
-        }
-    }
-    out
 }
 
 enum ClipMenuAction {
@@ -165,7 +158,7 @@ pub fn draw_ruler(
 
     ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
 
-    handle_zoom_and_pan(ui, response.hovered(), rect, state);
+    handle_zoom_and_pan(ui, response.hovered(), rect, state, true);
 
     if response.clicked()
         && let Some(pos) = response.interact_pointer_pos() {
@@ -283,7 +276,7 @@ fn pick_tick_step(seconds_visible: f32) -> f32 {
     600.0
 }
 
-fn format_time(total_secs: f32) -> String {
+pub(crate) fn format_time(total_secs: f32) -> String {
     let total_secs = total_secs.max(0.0);
     let minutes = (total_secs / 60.0) as u32;
     let secs = total_secs - (minutes as f32) * 60.0;
@@ -342,16 +335,19 @@ fn snap_move_start_with_indicator(
 }
 
 /// Ctrl+scroll zooms the timeline (keeping the sample under the pointer
-/// fixed); Shift+scroll pans it horizontally. Consumes the scroll delta so
-/// the enclosing vertical `ScrollArea` doesn't also react to the same wheel
-/// event.
-fn handle_zoom_and_pan(ui: &egui::Ui, hovered: bool, rect: Rect, state: &mut TimelineState) {
+/// fixed). Over the ruler, Shift+scroll pans it horizontally as well
+/// (`allow_shift_pan`); over a track lane it's left alone instead so
+/// `handle_vertical_zoom` can use Shift+scroll for that track's waveform
+/// zoom. Consumes the scroll delta so the enclosing vertical `ScrollArea`
+/// doesn't also react to the same wheel event.
+fn handle_zoom_and_pan(ui: &egui::Ui, hovered: bool, rect: Rect, state: &mut TimelineState, allow_shift_pan: bool) {
     if !hovered {
         return;
     }
     let (scroll_y, ctrl, shift) = ui
         .ctx()
         .input(|i| (i.smooth_scroll_delta.y, i.modifiers.command, i.modifiers.shift));
+    let shift = shift && allow_shift_pan;
     if scroll_y == 0.0 || !(ctrl || shift) {
         return;
     }
@@ -371,10 +367,31 @@ fn handle_zoom_and_pan(ui: &egui::Ui, hovered: bool, rect: Rect, state: &mut Tim
     ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
 }
 
+/// Shift+scroll over a track's lane zooms that track's waveform vertically
+/// (amplitude only, purely visual) so quiet passages become visible,
+/// Audacity-style. Consumes the scroll delta like `handle_zoom_and_pan`.
+fn handle_vertical_zoom(ui: &egui::Ui, hovered: bool, state: &mut TimelineState, track_id: TrackId) {
+    if !hovered {
+        return;
+    }
+    let (scroll_y, shift) = ui.ctx().input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
+    if scroll_y == 0.0 || !shift {
+        return;
+    }
+
+    let zoom = if scroll_y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+    let current = state.vertical_zoom(track_id);
+    state
+        .vertical_zoom
+        .insert(track_id, (current * zoom).clamp(MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM));
+
+    ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
+}
+
 /// Draws one track's timeline lane: its clips (with a waveform outline),
 /// the playhead, and handles clip selection (Shift+click adds to a
-/// multi-selection), drag-to-move/duplicate/trim, Alt-drag range-select,
-/// "I"-to-split-under-cursor, and the cut/copy/duplicate context menu.
+/// multi-selection), drag-to-move/duplicate/trim, "I"-to-split-at-playhead,
+/// and the cut/copy/duplicate context menu.
 /// `all_track_ids` is every track in display order (for cross-track drag
 /// targeting) and `snap_targets` is every clip edge in the whole project
 /// (for cross-track snapping).
@@ -396,7 +413,8 @@ pub fn draw_lane(
     ui.painter()
         .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-    handle_zoom_and_pan(ui, lane_response.hovered(), rect, state);
+    handle_zoom_and_pan(ui, lane_response.hovered(), rect, state, false);
+    handle_vertical_zoom(ui, lane_response.hovered(), state, track_id);
 
     let px_per_sample = state.px_per_sample;
     let scroll = state.scroll_x_samples;
@@ -417,23 +435,10 @@ pub fn draw_lane(
     // Shift+drag on empty lane space starts a marquee selection spanning
     // however many tracks/time the drag covers (committed in
     // `draw_lane`'s caller-independent handling below, once released).
-    // A plain (non-Shift) drag from empty space instead paints a
-    // sub-range selection — e.g. for a ranged fade or mute — that can
-    // spill into whichever clips it passes over, clipped per clip.
     if lane_response.drag_started() {
         let shift = ui.ctx().input(|i| i.modifiers.shift);
         if shift {
             state.marquee_anchor = ui.ctx().pointer_interact_pos();
-        } else if let Some(pos) = ui.ctx().pointer_interact_pos() {
-            state.drag = Some(DragState {
-                clip_id: None,
-                origin_track: track_id,
-                len_samples: 0,
-                grab_offset_samples: 0,
-                mode: DragMode::RangeSelect {
-                    anchor_sample: sample_for_x(pos.x),
-                },
-            });
         }
     }
     if lane_response.drag_stopped()
@@ -486,29 +491,6 @@ pub fn draw_lane(
     let track_names: Vec<(TrackId, String)> =
         project.tracks.iter().map(|t| (t.id, t.name.clone())).collect();
 
-    // Commits a range-select drag that started on empty lane space (not
-    // tied to any specific clip) — the per-clip-started (Alt-drag) case is
-    // committed inside the per-clip loop below instead.
-    let started_here_untied = state
-        .drag
-        .as_ref()
-        .map(|d| d.clip_id.is_none() && d.origin_track == track_id)
-        .unwrap_or(false);
-    if lane_response.drag_stopped() && started_here_untied
-        && let Some(DragState {
-            mode: DragMode::RangeSelect { anchor_sample },
-            ..
-        }) = state.drag.take()
-            && let Some(pos) = ui.ctx().pointer_interact_pos() {
-                let current = sample_for_x(pos.x);
-                let lo = anchor_sample.min(current);
-                let hi = anchor_sample.max(current);
-                let selections = overlapping_range_selections(&clips, lo, hi);
-                if !selections.is_empty() {
-                    state.range_selections = selections;
-                }
-            }
-
     // Clamped (rather than `None` outside the track list's bounds) so
     // dragging a clip on the first/last track and drifting slightly
     // above/below it still resolves to that same track — otherwise the
@@ -528,7 +510,7 @@ pub fn draw_lane(
         let being_dragged = state
             .drag
             .as_ref()
-            .map(|d| d.clip_id == Some(clip.id))
+            .map(|d| d.clip_id == clip.id)
             .unwrap_or(false);
 
         let x = x_for(clip.start_sample);
@@ -543,13 +525,8 @@ pub fn draw_lane(
 
         if response.drag_started() {
             let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
-            let alt = ui.ctx().input(|i| i.modifiers.alt);
             let duplicate = ui.ctx().input(|i| i.modifiers.command);
-            let mode = if alt {
-                DragMode::RangeSelect {
-                    anchor_sample: sample_for_x(pointer_x),
-                }
-            } else if (pointer_x - x).abs() <= EDGE_GRAB_PX {
+            let mode = if (pointer_x - x).abs() <= EDGE_GRAB_PX {
                 DragMode::TrimStart
             } else if (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX {
                 DragMode::TrimEnd
@@ -558,7 +535,7 @@ pub fn draw_lane(
             };
             let grab = ((pointer_x - x) / px_per_sample) as i64;
             state.drag = Some(DragState {
-                clip_id: Some(clip.id),
+                clip_id: clip.id,
                 origin_track: track_id,
                 len_samples: clip.len_samples,
                 grab_offset_samples: grab,
@@ -567,26 +544,39 @@ pub fn draw_lane(
         }
 
         if response.clicked() {
-            let shift = ui.ctx().input(|i| i.modifiers.shift);
-            if shift {
-                if !project.selection.remove(&clip.id) {
+            let bottom_half = response
+                .interact_pointer_pos()
+                .map(|p| p.y >= clip_rect.center().y)
+                .unwrap_or(false);
+            if bottom_half {
+                // Bottom half of a clip acts like clicking the lane behind
+                // it: move the playhead there instead of selecting the clip.
+                let pointer_x = response.interact_pointer_pos().map(|p| p.x).unwrap_or(x);
+                let sample = sample_for_x(pointer_x);
+                state.last_click = Some((track_id, sample));
+                project.selection.clear();
+                project.selected_tracks.clear();
+                engine.seek(sample);
+            } else {
+                let shift = ui.ctx().input(|i| i.modifiers.shift);
+                if shift {
+                    if !project.selection.remove(&clip.id) {
+                        project.selection.insert(clip.id);
+                    }
+                } else {
+                    project.selection.clear();
                     project.selection.insert(clip.id);
                 }
-            } else {
-                project.selection.clear();
-                project.selection.insert(clip.id);
+                project.selected_tracks.clear();
+                state.last_click = Some((track_id, clip.start_sample));
             }
-            project.selected_tracks.clear();
-            state.last_click = Some((track_id, clip.start_sample));
         }
 
-        // Where "I" (split-under-cursor) or the "Split here" menu item
-        // would cut this clip, if the pointer is inside it.
-        let split_sample = ui
-            .ctx()
-            .pointer_interact_pos()
-            .map(|p| sample_for_x(p.x))
-            .filter(|&s| s > clip.start_sample && s < clip.start_sample + clip.len_samples);
+        // Where "I" or the "Split here" menu item would cut this clip, if
+        // the playhead (the timeline selection point) is inside it — not
+        // wherever the mouse happens to be hovering.
+        let split_sample =
+            Some(playhead_sample).filter(|&s| s > clip.start_sample && s < clip.start_sample + clip.len_samples);
 
         if keys_active && response.hovered() {
             let i_pressed = ui.ctx().input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::I));
@@ -599,7 +589,7 @@ pub fn draw_lane(
         let should_commit_drag = state
             .drag
             .as_ref()
-            .map(|d| d.clip_id == Some(clip.id))
+            .map(|d| d.clip_id == clip.id)
             .unwrap_or(false);
         if response.drag_stopped() && should_commit_drag
             && let Some(drag) = state.drag.take() {
@@ -636,27 +626,24 @@ pub fn draw_lane(
                         // boundary, not boundary-minus-end.
                         project.trim_clip_end(clip.id, end - boundary);
                     }
-                    DragMode::RangeSelect { anchor_sample } => {
-                        // Spans every clip on this track the drag touches
-                        // (e.g. the end of one clip and the start of the
-                        // next few), clipped to each clip's own bounds.
-                        let current = sample_for_x(pointer_x);
-                        let lo = anchor_sample.min(current);
-                        let hi = anchor_sample.max(current);
-                        let selections = overlapping_range_selections(&clips, lo, hi);
-                        if !selections.is_empty() {
-                            state.range_selections = selections;
-                        }
-                    }
                 }
             }
 
         let selected = project.selection.contains(&clip.id);
-        draw_clip_rect(ui, clip_rect, &clip.name, &clip.samples, clip.channels, being_dragged, selected);
+        draw_clip_rect(
+            ui,
+            clip_rect,
+            &clip.name,
+            &clip.samples,
+            clip.channels,
+            being_dragged,
+            selected,
+            state.vertical_zoom(track_id),
+        );
 
         // Live preview + snap indicator while trimming this clip's edge.
         if let Some(drag) = &state.drag
-            && drag.clip_id == Some(clip.id)
+            && drag.clip_id == clip.id
             && matches!(drag.mode, DragMode::TrimStart | DragMode::TrimEnd)
             && let Some(pointer_x) = ui.ctx().pointer_interact_pos().map(|p| p.x)
         {
@@ -670,28 +657,6 @@ pub fn draw_lane(
                 [egui::pos2(gx, clip_rect.top()), egui::pos2(gx, clip_rect.bottom())],
                 Stroke::new(2.0, Color32::from_rgb(120, 170, 255)),
             );
-        }
-
-        // Live preview while Alt-dragging a mute/fade-range that may span
-        // multiple clips on this track.
-        if let Some(drag) = &state.drag
-            && drag.origin_track == track_id
-            && let DragMode::RangeSelect { anchor_sample } = drag.mode
-                && let Some(pointer_x) = ui.ctx().pointer_interact_pos().map(|p| p.x) {
-                        let current = sample_for_x(pointer_x);
-                        let lo = anchor_sample.min(current).max(clip.start_sample);
-                        let hi = anchor_sample
-                            .max(current)
-                            .min(clip.start_sample + clip.len_samples);
-                        if hi > lo {
-                            draw_range_overlay(ui, clip_rect, x_for(lo), x_for(hi));
-                        }
-                    }
-        // The persisted (committed) selection entries on this clip.
-        for &(sel_id, lo, hi) in &state.range_selections {
-            if sel_id == clip.id {
-                draw_range_overlay(ui, clip_rect, x_for(lo), x_for(hi));
-            }
         }
 
         let mut menu_action: Option<ClipMenuAction> = None;
@@ -709,7 +674,7 @@ pub fn draw_lane(
                 ui.close();
             }
             if ui
-                .add_enabled(split_sample.is_some(), egui::Button::new("Split here"))
+                .add_enabled(split_sample.is_some(), egui::Button::new("Split at playhead"))
                 .clicked()
             {
                 if let Some(s) = split_sample {
@@ -793,20 +758,6 @@ pub fn draw_lane(
     }
 }
 
-fn draw_range_overlay(ui: &egui::Ui, clip_rect: Rect, x_lo: f32, x_hi: f32) {
-    let lo = x_lo.max(clip_rect.left());
-    let hi = x_hi.min(clip_rect.right());
-    if hi <= lo {
-        return;
-    }
-    let overlay_rect = Rect::from_min_max(egui::pos2(lo, clip_rect.top()), egui::pos2(hi, clip_rect.bottom()));
-    ui.painter().rect_filled(
-        overlay_rect,
-        CornerRadius::ZERO,
-        Color32::from_rgba_unmultiplied(255, 80, 80, 70),
-    );
-}
-
 fn draw_clip_rect(
     ui: &egui::Ui,
     rect: Rect,
@@ -815,6 +766,7 @@ fn draw_clip_rect(
     channels: u8,
     dragging: bool,
     selected: bool,
+    vertical_zoom: f32,
 ) {
     let visuals = ui.visuals();
     // Clips are always drawn on a dark fill with light text/waveform,
@@ -849,14 +801,14 @@ fn draw_clip_rect(
             left.push(frame[0]);
             right.push(frame[1]);
         }
-        draw_waveform(painter, top_rect, &left, wave_color);
-        draw_waveform(painter, bottom_rect, &right, wave_color);
+        draw_waveform(painter, top_rect, &left, wave_color, vertical_zoom);
+        draw_waveform(painter, bottom_rect, &right, wave_color, vertical_zoom);
         painter.line_segment(
             [egui::pos2(rect.left(), mid_y), egui::pos2(rect.right(), mid_y)],
             Stroke::new(1.0, stroke_color.gamma_multiply(0.7)),
         );
     } else {
-        draw_waveform(painter, rect, samples, wave_color);
+        draw_waveform(painter, rect, samples, wave_color, vertical_zoom);
     }
     painter.rect_stroke(
         rect,
@@ -877,7 +829,10 @@ fn draw_clip_rect(
 /// per pixel column. Each column scans at most a bounded number of samples
 /// (striding through longer spans) so cost stays roughly proportional to
 /// on-screen width regardless of how zoomed-out a long clip is.
-fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Color32) {
+/// `vertical_zoom` (>= 1.0) scales the drawn amplitude only — never the
+/// underlying audio — clamping to ±1.0 so an over-zoomed loud passage
+/// flattens at the top/bottom of `rect` instead of spilling past it.
+fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Color32, vertical_zoom: f32) {
     if samples.is_empty() || rect.width() < 1.0 {
         return;
     }
@@ -905,6 +860,8 @@ fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Co
             max_v = max_v.max(s);
             i += step;
         }
+        let min_v = (min_v * vertical_zoom).clamp(-1.0, 1.0);
+        let max_v = (max_v * vertical_zoom).clamp(-1.0, 1.0);
 
         let x = rect.left() + col as f32;
         painter.line_segment(

@@ -23,7 +23,8 @@ fn save_then_load_round_trips_tracks_and_clips() {
     assert_eq!(loaded.tracks[0].clips.len(), 1);
     let clip = &loaded.tracks[0].clips[0];
     assert_eq!(clip.start_sample, 100);
-    assert_eq!(clip.visible_samples(), &[0.25, 0.5, -0.25, -0.5]);
+    // Tracks default to stereo, so the mono input is duplicated to both channels.
+    assert_eq!(clip.visible_samples(), &[0.25, 0.25, 0.5, 0.5, -0.25, -0.25, -0.5, -0.5]);
 }
 
 #[test]

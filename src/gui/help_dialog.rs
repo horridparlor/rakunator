@@ -19,34 +19,44 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 row(ui, "Click the ruler / a track lane", "Seek the playhead there");
                 row(ui, "Zoom In / Zoom Out (toolbar)", "Zoom the timeline");
                 row(ui, "Ctrl+Scroll on the timeline", "Zoom in/out (may be intercepted by some window managers — use the buttons if so)");
-                row(ui, "Shift+Scroll on the timeline", "Pan horizontally");
+                row(ui, "Shift+Scroll on the ruler", "Pan horizontally");
+                row(ui, "Shift+Scroll on a track", "Zoom that track's waveform vertically, to see quiet detail (visual only)");
                 row(ui, "Bottom scrollbar", "Click/drag to scroll through the song");
 
+                section(ui, "Recording");
+                row(
+                    ui,
+                    "\u{25cf} (toolbar, next to Play)",
+                    "Capture the default microphone onto a new track; click it again to stop (hover it to see elapsed time)",
+                );
+                row(ui, "While recording", "The rest of the UI is locked until you stop");
+
                 section(ui, "Selecting clips & tracks");
-                row(ui, "Click a clip", "Select just that clip");
+                row(ui, "Click the top half of a clip", "Select just that clip");
+                row(ui, "Click the bottom half of a clip", "Move the playhead there, like clicking the lane behind it");
                 row(ui, "Shift+Click a clip", "Add/remove that clip from the selection");
                 row(ui, "Shift+Drag empty timeline space", "Marquee-select every clip the box touches");
                 row(ui, "Click a track's empty header area", "Select the whole track");
                 row(ui, "Shift+Click a track header", "Add/remove that track from the selection");
-                row(ui, "Shift+Left / Shift+Right", "Jump the selected clip(s) to the very start / right after the last clip");
+                row(ui, "Shift+Left / Shift+Right", "Jump the selected clip(s) to the very start / right after the last clip, or move the playhead there if nothing's selected");
 
                 section(ui, "Editing clips");
                 row(ui, "Drag a clip", "Move it in time (drop on another track to move it there)");
                 row(ui, "Ctrl+Drag a clip", "Duplicate it instead of moving it");
                 row(ui, "Drag a clip's left/right edge", "Trim it smaller — drag back out to recover trimmed audio");
-                row(ui, "Left / Right arrows", "Nudge the selected clip(s) in time by a small step");
+                row(ui, "Left / Right arrows", "Nudge the selected clip(s) in time by a small step, or move the playhead if nothing's selected");
                 row(ui, "\"S\"", "Split the selected clip(s) at the playhead");
-                row(ui, "\"I\" while hovering a clip", "Split that clip at the cursor");
+                row(ui, "\"I\" while hovering a clip", "Split that clip at the playhead (even if it isn't selected)");
                 row(ui, "Ctrl+J", "Join the selected clips (on the same track) into one");
                 row(ui, "Ctrl+X / Ctrl+C / Ctrl+V", "Cut / Copy / Paste the selected clip(s)");
+                row(ui, "Delete / Backspace", "Delete the selected track(s), or the selected clip(s) if no track is selected");
                 row(ui, "Ctrl+D", "Duplicate the selected clip(s) in place");
                 row(ui, "Right-click a clip", "Cut/Copy/Duplicate/Split/\"Duplicate to track\" menu");
                 row(ui, "Ctrl+Z / Ctrl+Shift+Z", "Undo / Redo");
 
-                section(ui, "Ranged fade & mute");
-                row(ui, "Click+drag empty space into a clip (or Alt+drag on a clip)", "Paint a sub-range selection — can span the tail of one clip and the head of the next few");
-                row(ui, "Ctrl+F / Ctrl+Shift+F", "Fade in/out — just the painted range if one exists, otherwise the whole effect target");
-                row(ui, "Ctrl+L", "Mute the painted range");
+                section(ui, "Fade & mute");
+                row(ui, "Ctrl+F / Ctrl+Shift+F", "Fade in/out the selected track(s) or clip(s)");
+                row(ui, "Ctrl+L", "Mute the selected track(s) or clip(s)");
 
                 section(ui, "Effects (toolbar)");
                 row(ui, "Pitch Up/Down", "Resample the clip (tape-speed pitch shift, changes duration too)");

@@ -15,7 +15,8 @@ pub struct Track {
     pub muted: bool,
     pub soloed: bool,
     /// 1 = mono, 2 = stereo. All clips on the track share this channel
-    /// count — set from the first clip added to an empty track (see
+    /// count — new tracks default to stereo (see `Track::new`), raised to
+    /// match a wider clip added to an empty track (see
     /// `Project::add_clip_channels`), and changed only by
     /// `Project::split_track_to_mono`/`merge_track_with_below`.
     pub channels: u8,
@@ -31,7 +32,7 @@ impl Track {
             volume: 1.0,
             muted: false,
             soloed: false,
-            channels: 1,
+            channels: 2,
             clips: Vec::new(),
         }
     }

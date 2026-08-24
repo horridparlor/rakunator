@@ -408,12 +408,14 @@ impl Project {
 
     /// Adds a new clip built from raw interleaved `samples` (`source_channels`
     /// channels) onto `track_id` at `start_sample` — used by file import,
-    /// which may supply stereo audio. An empty target track adopts
-    /// `source_channels` as its own channel count; a track that already has
-    /// clips keeps its existing channel count, and the incoming audio is
-    /// converted to match (mono duplicated to both channels, or stereo
-    /// downmixed to mono) so every clip on a track always shares its
-    /// channel count.
+    /// which may supply stereo audio. An empty target track's channel count
+    /// is raised to `source_channels` if the clip is wider (e.g. a stereo
+    /// import onto a fresh stereo-default track stays stereo, and a mono
+    /// clip is duplicated to both channels rather than downgrading the
+    /// track); a track that already has clips keeps its existing channel
+    /// count, and the incoming audio is converted to match (mono duplicated
+    /// to both channels, or stereo downmixed to mono) so every clip on a
+    /// track always shares its channel count.
     pub fn add_clip_channels(
         &mut self,
         track_id: TrackId,
@@ -427,7 +429,7 @@ impl Project {
         let track = self.track_mut(track_id)?;
         let source_channels = source_channels.max(1);
         if track.clips.is_empty() {
-            track.channels = source_channels;
+            track.channels = track.channels.max(source_channels);
         }
         let target_channels = track.channels;
         let samples = convert_channel_count(samples, source_channels, target_channels);
@@ -526,6 +528,20 @@ impl Project {
         }
         self.push_undo();
         self.clipboard = entries;
+        for &id in clip_ids {
+            if let Some(track_id) = self.find_clip_track(id)
+                && let Some(track) = self.track_mut(track_id) {
+                    track.clips.retain(|c| c.id != id);
+                }
+        }
+    }
+
+    /// Removes `clip_ids` from their tracks without touching the clipboard.
+    pub fn delete_clips(&mut self, clip_ids: &[ClipId]) {
+        if clip_ids.is_empty() {
+            return;
+        }
+        self.push_undo();
         for &id in clip_ids {
             if let Some(track_id) = self.find_clip_track(id)
                 && let Some(track) = self.track_mut(track_id) {

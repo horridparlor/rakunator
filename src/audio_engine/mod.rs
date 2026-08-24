@@ -2,6 +2,7 @@ pub mod consumer;
 pub mod meter;
 pub mod mix;
 pub mod producer;
+pub mod recorder;
 pub mod transport;
 
 use crate::project::Project;

@@ -1,3 +1,4 @@
+use super::timeline::format_time;
 use super::RakunatorApp;
 use crate::project::{db_to_gain, ClipId, TrackId};
 
@@ -72,49 +73,128 @@ impl Default for EffectsState {
     }
 }
 
+/// The blue accent tint used for icon-only toolbar buttons' idle "bubble"
+/// (Play/Pause/Stop/Record) — the same hue as the app's selection accent,
+/// just kept faintly visible at rest instead of only appearing on hover.
+const ICON_BUTTON_TINT: egui::Color32 = egui::Color32::from_rgb(120, 170, 255);
+
 pub fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
+    let recording = app.recording.is_some();
     ui.horizontal(|ui| {
-        if ui.button("Add Track").clicked() {
-            app.project.lock().unwrap().add_track();
-        }
-        ui.separator();
-        if ui.button("Create Wave...").clicked() {
-            app.wave_dialog.open = true;
-        }
-        if ui.button("Project File...").clicked() {
-            app.project_file_dialog.open = true;
-        }
-        if ui.button("Export Project...").clicked() {
-            if let Some(name) = &app.project_name {
-                app.export_dialog.set_file_name(name.clone());
+        ui.add_enabled_ui(!recording, |ui| {
+            clear_idle_button_frame(ui);
+            if text_button(ui, "Add Track").clicked() {
+                app.project.lock().unwrap().add_track();
             }
-            app.export_dialog.open = true;
-        }
-        ui.separator();
-        draw_effects_menu(ui, app);
-        ui.separator();
-        if ui.button("Zoom In").clicked() {
-            app.timeline.zoom(1.2);
-        }
-        if ui.button("Zoom Out").clicked() {
-            app.timeline.zoom(1.0 / 1.2);
-        }
-        ui.separator();
-        if ui.button("Play").clicked() {
-            app.start_playback();
-        }
-        if ui.button("Pause").clicked() {
-            app.pause_playback();
-        }
-        if ui.button("Stop").clicked() {
-            app.engine.stop();
-            app.play_start_position = None;
-        }
-        ui.separator();
-        if ui.button("Help").clicked() {
-            app.help_open = true;
-        }
+            ui.separator();
+            if text_button(ui, "Create Wave...").clicked() {
+                app.wave_dialog.open = true;
+            }
+            if text_button(ui, "Project File...").clicked() {
+                app.project_file_dialog.open = true;
+            }
+            if text_button(ui, "Export Project...").clicked() {
+                if let Some(name) = &app.project_name {
+                    app.export_dialog.set_file_name(name.clone());
+                }
+                app.export_dialog.open = true;
+            }
+            ui.separator();
+            draw_effects_menu(ui, app);
+            ui.separator();
+            if text_button(ui, "Zoom In").clicked() {
+                app.timeline.zoom(1.2);
+            }
+            if text_button(ui, "Zoom Out").clicked() {
+                app.timeline.zoom(1.0 / 1.2);
+            }
+            ui.separator();
+            if icon_button(ui, "\u{25b6}").on_hover_text("Play").clicked() {
+                app.start_playback();
+            }
+        });
+
+        // The Record button stays clickable even while recording — it's
+        // the only way to stop — so it lives outside the disabled scope
+        // that locks the rest of the toolbar during a capture.
+        draw_record_button(ui, app);
+
+        ui.add_enabled_ui(!recording, |ui| {
+            clear_idle_button_frame(ui);
+            if icon_button(ui, "\u{23f8}").on_hover_text("Pause").clicked() {
+                app.pause_playback();
+            }
+            if icon_button(ui, "\u{23f9}").on_hover_text("Stop").clicked() {
+                app.engine.stop();
+                app.play_start_position = None;
+            }
+            ui.separator();
+            if text_button(ui, "Help").clicked() {
+                app.help_open = true;
+            }
+        });
     });
+}
+
+/// Drops the idle-state background/border for every plain button and menu
+/// button drawn in `ui` from this point on, so they read as plain text
+/// instead of sitting in a "bubble" — hover/press feedback is untouched.
+/// `icon_button` layers its own tinted bubble back on top of this per call.
+fn clear_idle_button_frame(ui: &mut egui::Ui) {
+    let visuals = ui.visuals_mut();
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+}
+
+/// A plain toolbar button: text only, no idle "bubble" (assumes
+/// `clear_idle_button_frame` has already been applied to `ui`).
+fn text_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.button(label)
+}
+
+/// An icon-only toolbar button (Play/Pause/Stop/Record): keeps its
+/// background bubble, tinted blue, with a bit more vertical breathing room
+/// around the glyph than a text button gets.
+fn icon_button(ui: &mut egui::Ui, content: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding.y += 3.0;
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.weak_bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.18);
+        visuals.widgets.inactive.bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.18);
+        visuals.widgets.hovered.weak_bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.35);
+        visuals.widgets.hovered.bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.35);
+        visuals.widgets.active.weak_bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.55);
+        visuals.widgets.active.bg_fill = ICON_BUTTON_TINT.gamma_multiply(0.55);
+        ui.add(egui::Button::new(content))
+    })
+    .inner
+}
+
+/// The Record button: a red dot (Audacity-style, icon-only) that starts
+/// capturing the default system microphone on click, and stops it on a
+/// second click — its tooltip carries the elapsed time while active since
+/// the button itself shows no text.
+fn draw_record_button(ui: &mut egui::Ui, app: &mut RakunatorApp) {
+    let recording = app.recording.is_some();
+    let dot_color = egui::Color32::from_rgb(220, 40, 40);
+    let content = egui::RichText::new("\u{25cf}").color(dot_color);
+
+    if recording {
+        let elapsed = app
+            .record_started_at
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+        let tooltip = format!("Stop recording ({})", format_time(elapsed));
+        if icon_button(ui, content).on_hover_text(tooltip).clicked() {
+            app.stop_recording();
+        }
+    } else if icon_button(ui, content)
+        .on_hover_text("Record from the default microphone")
+        .clicked()
+    {
+        app.start_recording();
+    }
 }
 
 /// Applies whichever of Pitch Up/Down or Volume Up/Down was last used (at

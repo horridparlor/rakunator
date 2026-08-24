@@ -87,6 +87,9 @@ fn mix_frame_excludes_muted_tracks() {
     let mut project = Project::new(48_000);
     let track_a = project.tracks[0].id;
     let track_b = project.add_track();
+    // Force mono (tracks default to stereo) so center pan applies the
+    // expected equal-power ~0.707 split checked below.
+    project.track_mut(track_a).unwrap().channels = 1;
     project.add_clip(track_a, "a".into(), 0, vec![1.0; 10]).unwrap();
     project.add_clip(track_b, "b".into(), 0, vec![1.0; 10]).unwrap();
     project.track_mut(track_b).unwrap().muted = true;

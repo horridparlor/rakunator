@@ -81,7 +81,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             .and_then(|id| track_list.iter().find(|(tid, _)| *tid == id))
             .map(|(_, name)| name.clone())
             .unwrap_or_default();
-        egui::ComboBox::from_label("Target Track")
+        egui::ComboBox::from_label("Target Track (for \"Create\")")
             .selected_text(target_name)
             .show_ui(ui, |ui| {
                 for (id, name) in &track_list {
@@ -103,7 +103,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 import = true;
             }
         });
-        ui.label("(Only .wav import is supported for now.)");
+        ui.label("(\"Import\" creates a new track. Only .wav import is supported for now.)");
     });
 
     app.wave_dialog.open = open;
@@ -128,11 +128,9 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     }
 
     if import {
-        let target_track = app.wave_dialog.target_track;
-        if let Some(target) = target_track
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("WAV audio", &["wav"])
-                .pick_file()
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav"])
+            .pick_file()
         {
             let mut project = app.project.lock().unwrap();
             if let Some((samples, channels)) = import::load_wav(&path, project.sample_rate_hz) {
@@ -141,7 +139,13 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                     .and_then(|s| s.to_str())
                     .unwrap_or("Imported")
                     .to_string();
+                let target = project.add_track();
+                if let Some(track) = project.track_mut(target) {
+                    track.name = name.clone();
+                }
                 project.add_clip_channels(target, name, 0, samples, channels);
+            } else {
+                eprintln!("failed to import {}: not a readable WAV file", path.display());
             }
         }
         app.wave_dialog.open = false;

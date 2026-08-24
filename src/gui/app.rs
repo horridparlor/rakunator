@@ -1,5 +1,6 @@
+use crate::audio_engine::recorder::{to_project_format, Recorder};
 use crate::audio_engine::AudioEngine;
-use crate::project::{import, ClipId, Project};
+use crate::project::{import, ClipId, Project, TrackId};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,6 +27,13 @@ pub struct RakunatorApp {
     /// Base name of the last project file saved/loaded (no directory or
     /// extension); the Export dialog defaults its filename to this.
     pub(super) project_name: Option<String>,
+    /// The in-progress microphone capture, if the Record button is active.
+    /// Its presence locks the rest of the UI (see `ui`) so edits can't race
+    /// with the new track/clip that appears once recording stops.
+    pub(super) recording: Option<Recorder>,
+    /// When the current recording started, for the toolbar's elapsed-time
+    /// readout.
+    pub(super) record_started_at: Option<std::time::Instant>,
 }
 
 impl RakunatorApp {
@@ -52,6 +60,8 @@ impl RakunatorApp {
             help_open: false,
             play_start_position: None,
             project_name: None,
+            recording: None,
+            record_started_at: None,
         }
     }
 
@@ -69,6 +79,50 @@ impl RakunatorApp {
         if let Some(pos) = self.play_start_position.take() {
             self.engine.seek(pos);
         }
+    }
+
+    /// Opens the default microphone and starts capturing. Does nothing if
+    /// already recording, or if there's no input device available.
+    pub(super) fn start_recording(&mut self) {
+        if self.recording.is_some() {
+            return;
+        }
+        match Recorder::start() {
+            Some(recorder) => {
+                self.recording = Some(recorder);
+                self.record_started_at = Some(std::time::Instant::now());
+            }
+            None => eprintln!("recording failed: no microphone/input device available"),
+        }
+    }
+
+    /// Stops capturing and bakes whatever was recorded into a fresh track,
+    /// named after how long it ran, converted to the project's sample rate
+    /// and channel layout (see `to_project_format`). Does nothing if not
+    /// currently recording.
+    pub(super) fn stop_recording(&mut self) {
+        let Some(recorder) = self.recording.take() else {
+            return;
+        };
+        self.record_started_at = None;
+        let channels = recorder.channels;
+        let device_rate = recorder.sample_rate_hz;
+        let raw = recorder.stop();
+        if raw.is_empty() {
+            return;
+        }
+
+        let mut project = self.project.lock().unwrap();
+        let (samples, out_channels) = to_project_format(&raw, channels, device_rate, project.sample_rate_hz);
+        if samples.is_empty() {
+            return;
+        }
+        let name = format!("Recording {}", project.tracks.len() + 1);
+        let target = project.add_track();
+        if let Some(track) = project.track_mut(target) {
+            track.name = name.clone();
+        }
+        project.add_clip_channels(target, name, 0, samples, out_channels);
     }
 }
 
@@ -112,8 +166,12 @@ fn modern_visuals() -> egui::Visuals {
 
 impl eframe::App for RakunatorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        handle_shortcuts(ui, self);
-        handle_dropped_files(ui, self);
+        let recording = self.recording.is_some();
+
+        if !recording {
+            handle_shortcuts(ui, self);
+            handle_dropped_files(ui, self);
+        }
 
         egui::Panel::top("toolbar")
             .frame(egui::Frame::default().inner_margin(egui::Margin {
@@ -127,74 +185,78 @@ impl eframe::App for RakunatorApp {
             });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            let project = &self.project;
-            let engine = &self.engine;
-            let timeline_state = &mut self.timeline;
-            let sample_rate_hz = self.sample_rate_hz;
-            let playhead = engine.position();
+            ui.add_enabled_ui(!recording, |ui| {
+                let project = &self.project;
+                let engine = &self.engine;
+                let timeline_state = &mut self.timeline;
+                let sample_rate_hz = self.sample_rate_hz;
+                let playhead = engine.position();
 
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, RULER_HEIGHT), |_ui| {});
-                timeline::draw_ruler(ui, timeline_state, playhead, sample_rate_hz, engine);
-            });
+                ui.horizontal(|ui| {
+                    ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, RULER_HEIGHT), |_ui| {});
+                    timeline::draw_ruler(ui, timeline_state, playhead, sample_rate_hz, engine);
+                });
 
-            timeline_state.clear_snap_indicator();
-            let mut track_count = 0usize;
-            let mut content_end_sample = 0u64;
+                timeline_state.clear_snap_indicator();
+                let mut track_count = 0usize;
+                let mut content_end_sample = 0u64;
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let mut project = project.lock().unwrap();
-                timeline_state.tracks_top_y = ui.cursor().top();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut project = project.lock().unwrap();
+                    timeline_state.tracks_top_y = ui.cursor().top();
 
-                // Every clip edge in the project, used by the timeline's
-                // move/trim snapping so clips can align to each other's
-                // start/end points across tracks.
-                let snap_targets: Vec<u64> = project
-                    .tracks
-                    .iter()
-                    .flat_map(|t| &t.clips)
-                    .flat_map(|c| [c.start_sample, c.end_sample()])
-                    .collect();
-                content_end_sample = snap_targets.iter().copied().max().unwrap_or(0);
+                    // Every clip edge in the project, used by the timeline's
+                    // move/trim snapping so clips can align to each other's
+                    // start/end points across tracks.
+                    let snap_targets: Vec<u64> = project
+                        .tracks
+                        .iter()
+                        .flat_map(|t| &t.clips)
+                        .flat_map(|c| [c.start_sample, c.end_sample()])
+                        .collect();
+                    content_end_sample = snap_targets.iter().copied().max().unwrap_or(0);
 
-                let track_ids: Vec<_> = project.tracks.iter().map(|t| t.id).collect();
-                track_count = track_ids.len();
-                for track_id in &track_ids {
-                    ui.horizontal(|ui| {
-                        ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, ROW_HEIGHT), |ui| {
-                            track_view::draw_header(ui, &mut project, *track_id, engine);
+                    let track_ids: Vec<_> = project.tracks.iter().map(|t| t.id).collect();
+                    track_count = track_ids.len();
+                    for track_id in &track_ids {
+                        ui.horizontal(|ui| {
+                            ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, ROW_HEIGHT), |ui| {
+                                track_view::draw_header(ui, &mut project, *track_id, engine);
+                            });
+                            timeline::draw_lane(
+                                ui,
+                                &mut project,
+                                *track_id,
+                                &track_ids,
+                                &snap_targets,
+                                timeline_state,
+                                playhead,
+                                engine,
+                            );
                         });
-                        timeline::draw_lane(
-                            ui,
-                            &mut project,
-                            *track_id,
-                            &track_ids,
-                            &snap_targets,
-                            timeline_state,
-                            playhead,
-                            engine,
-                        );
-                    });
-                    draw_row_gap(ui);
-                }
-            });
+                        draw_row_gap(ui);
+                    }
+                });
 
-            draw_marquee_overlay(ui, timeline_state);
-            draw_snap_indicator(ui, timeline_state, track_count);
+                draw_marquee_overlay(ui, timeline_state);
+                draw_snap_indicator(ui, timeline_state, track_count);
 
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, timeline::SCROLLBAR_HEIGHT), |_ui| {});
-                timeline::draw_horizontal_scrollbar(ui, timeline_state, content_end_sample, sample_rate_hz);
+                ui.horizontal(|ui| {
+                    ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, timeline::SCROLLBAR_HEIGHT), |_ui| {});
+                    timeline::draw_horizontal_scrollbar(ui, timeline_state, content_end_sample, sample_rate_hz);
+                });
             });
         });
 
-        wave_dialog::draw(ui.ctx(), self);
-        export_dialog::draw(ui.ctx(), self);
-        project_file_dialog::draw(ui.ctx(), self);
-        toolbar::draw_effects_settings_dialog(ui.ctx(), self);
+        if !recording {
+            wave_dialog::draw(ui.ctx(), self);
+            export_dialog::draw(ui.ctx(), self);
+            project_file_dialog::draw(ui.ctx(), self);
+            toolbar::draw_effects_settings_dialog(ui.ctx(), self);
+        }
         help_dialog::draw(ui.ctx(), self);
 
-        if self.engine.is_playing() {
+        if self.engine.is_playing() || recording {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
     }
@@ -255,12 +317,12 @@ fn draw_row_gap(ui: &mut egui::Ui) {
 const NUDGE_SECONDS: f32 = 0.05;
 
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
-/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes the last
-/// Alt-dragged sub-range; Left/Right nudges the selected clip(s) in time;
-/// plain Space toggles play/pause (resuming from wherever it was paused);
-/// plain S splits the selected clip(s) at the playhead. All keyboard
-/// handling is skipped while a text field (e.g. a track name) has focus,
-/// so typing a space or an "s" doesn't hijack the transport.
+/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them;
+/// Left/Right nudges the selected clip(s) in time; plain Space toggles
+/// play/pause (resuming from wherever it was paused); plain S splits the
+/// selected clip(s) at the playhead. All keyboard handling is skipped while
+/// a text field (e.g. a track name) has focus, so typing a space or an "s"
+/// doesn't hijack the transport.
 fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
@@ -294,6 +356,7 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         repeat_effect,
         undo,
         redo,
+        delete,
     ) = ui.ctx().input(|i| {
         (
             i.key_pressed(egui::Key::Space),
@@ -310,6 +373,7 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
             i.modifiers.command && i.key_pressed(egui::Key::R),
             i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
             i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z),
+            i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
         )
     });
 
@@ -345,45 +409,27 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
 
     if fade_in || fade_out {
-        // A held-mouse range selection (Alt-drag, possibly spanning
-        // several clips) narrows the fade to just that portion of each
-        // clip it touches; otherwise it's the whole effect target (the
-        // selected track, or the clip selection).
-        let ranges = app.timeline.range_selections.clone();
         let mut project = app.project.lock().unwrap();
-        if ranges.is_empty() {
-            let targets = project.effect_targets();
-            for id in targets {
-                if fade_in {
-                    project.apply_fade_in(id);
-                } else {
-                    project.apply_fade_out(id);
-                }
-            }
-        } else {
-            let overall_lo = ranges.iter().map(|(_, from, _)| *from).min().unwrap_or(0);
-            let overall_hi = ranges.iter().map(|(_, _, to)| *to).max().unwrap_or(0);
-            for (id, from, to) in ranges {
-                if fade_in {
-                    project.apply_fade_in_range(id, from, to, overall_lo, overall_hi);
-                } else {
-                    project.apply_fade_out_range(id, from, to, overall_lo, overall_hi);
-                }
+        let targets = project.effect_targets();
+        for id in targets {
+            if fade_in {
+                project.apply_fade_in(id);
+            } else {
+                project.apply_fade_out(id);
             }
         }
     }
 
     if mute_range {
-        let ranges = std::mem::take(&mut app.timeline.range_selections);
-        if !ranges.is_empty() {
-            let mut project = app.project.lock().unwrap();
-            for (id, from, to) in ranges {
-                project.mute_range(id, from, to);
-            }
+        let mut project = app.project.lock().unwrap();
+        let targets = project.effect_targets();
+        for id in targets {
+            project.mute_range(id, 0, u64::MAX);
         }
     }
 
-    if !(cut || copy || paste || duplicate || split || nudge_left || nudge_right || jump_start || jump_end) {
+    if !(cut || copy || paste || duplicate || split || nudge_left || nudge_right || jump_start || jump_end || delete)
+    {
         return;
     }
 
@@ -401,13 +447,42 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         return;
     }
 
+    if delete && !project.selected_tracks.is_empty() {
+        let track_ids: Vec<TrackId> = project.selected_tracks.iter().copied().collect();
+        for id in track_ids {
+            project.remove_track(id);
+        }
+        return;
+    }
+
     let selected_ids: Vec<ClipId> = project.selection.iter().copied().collect();
     if selected_ids.is_empty() {
+        // With no clip selected, these move the playhead itself instead of
+        // a clip that isn't there.
+        if nudge_left || nudge_right {
+            let nudge = (app.sample_rate_hz as f32 * NUDGE_SECONDS) as i64;
+            let delta = if nudge_left { -nudge } else { nudge };
+            let new_pos = (app.engine.position() as i64 + delta).max(0) as u64;
+            app.engine.seek(new_pos);
+        } else if jump_start {
+            app.engine.seek(0);
+        } else if jump_end {
+            let content_end = project
+                .tracks
+                .iter()
+                .flat_map(|t| &t.clips)
+                .map(|c| c.end_sample())
+                .max()
+                .unwrap_or(0);
+            app.engine.seek(content_end);
+        }
         return;
     }
 
     if cut {
         project.cut_clips(&selected_ids);
+    } else if delete {
+        project.delete_clips(&selected_ids);
     } else if copy {
         project.copy_clips(&selected_ids);
     } else if duplicate {
