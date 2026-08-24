@@ -34,6 +34,10 @@ pub struct RakunatorApp {
     /// When the current recording started, for the toolbar's elapsed-time
     /// readout.
     pub(super) record_started_at: Option<std::time::Instant>,
+    /// Where the playhead was sitting when recording started, so the
+    /// captured audio gets baked into a clip starting there instead of at
+    /// the very beginning of the timeline.
+    pub(super) record_start_sample: Option<u64>,
 }
 
 impl RakunatorApp {
@@ -62,6 +66,7 @@ impl RakunatorApp {
             project_name: None,
             recording: None,
             record_started_at: None,
+            record_start_sample: None,
         }
     }
 
@@ -81,8 +86,11 @@ impl RakunatorApp {
         }
     }
 
-    /// Opens the default microphone and starts capturing. Does nothing if
-    /// already recording, or if there's no input device available.
+    /// Opens the default microphone and starts capturing, from wherever the
+    /// playhead currently sits. Also starts playback, so the timeline
+    /// scrolls and existing tracks are audible as a click/backing reference
+    /// while recording. Does nothing if already recording, or if there's no
+    /// input device available.
     pub(super) fn start_recording(&mut self) {
         if self.recording.is_some() {
             return;
@@ -91,20 +99,26 @@ impl RakunatorApp {
             Some(recorder) => {
                 self.recording = Some(recorder);
                 self.record_started_at = Some(std::time::Instant::now());
+                self.record_start_sample = Some(self.engine.position());
+                self.start_playback();
             }
             None => eprintln!("recording failed: no microphone/input device available"),
         }
     }
 
-    /// Stops capturing and bakes whatever was recorded into a fresh track,
-    /// named after how long it ran, converted to the project's sample rate
-    /// and channel layout (see `to_project_format`). Does nothing if not
+    /// Stops capturing and playback, and bakes whatever was recorded into a
+    /// fresh track at the sample position recording started from, named
+    /// after how long it ran, converted to the project's sample rate and
+    /// channel layout (see `to_project_format`). Does nothing if not
     /// currently recording.
     pub(super) fn stop_recording(&mut self) {
         let Some(recorder) = self.recording.take() else {
             return;
         };
         self.record_started_at = None;
+        self.engine.pause();
+        self.play_start_position = None;
+        let start_sample = self.record_start_sample.take().unwrap_or(0);
         let channels = recorder.channels;
         let device_rate = recorder.sample_rate_hz;
         let raw = recorder.stop();
@@ -122,7 +136,7 @@ impl RakunatorApp {
         if let Some(track) = project.track_mut(target) {
             track.name = name.clone();
         }
-        project.add_clip_channels(target, name, 0, samples, out_channels);
+        project.add_clip_channels(target, name, start_sample, samples, out_channels);
     }
 }
 
