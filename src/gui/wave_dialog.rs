@@ -59,6 +59,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     let state = &mut app.wave_dialog;
 
     egui::Window::new("Create Wave").open(&mut open).show(ctx, |ui| {
+        ui.spacing_mut().item_spacing.y += 4.0;
         egui::ComboBox::from_label("Waveform")
             .selected_text(state.waveform.name())
             .show_ui(ui, |ui| {
@@ -163,10 +164,9 @@ fn slider_with_scroll(
 ) {
     let response = ui.add(egui::Slider::new(value, range.clone()).text(label));
     if response.hovered() {
-        let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            let delta = if scroll > 0.0 { step } else { -step };
-            *value = (*value + delta).clamp(*range.start(), *range.end());
+        let notches = super::wheel_notches(ui);
+        if notches != 0.0 {
+            *value = (*value + notches.round() * step).clamp(*range.start(), *range.end());
         }
     }
 }

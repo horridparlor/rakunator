@@ -1,3 +1,6 @@
+/// The app version shown in the Help window's footer.
+pub const APP_VERSION: &str = "0.1";
+
 /// Audio quality settings for exported files. Change these to alter the
 /// output quality of both the .wav and .mp3 exports.
 pub const SAMPLE_RATE_HZ: u32 = 48_000;

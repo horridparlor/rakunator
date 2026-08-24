@@ -40,6 +40,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     let mut browse_load = false;
 
     egui::Window::new("Project File").open(&mut open).show(ctx, |ui| {
+        ui.spacing_mut().item_spacing.y += 4.0;
         ui.horizontal(|ui| {
             ui.label("Path:");
             ui.add(egui::TextEdit::singleline(&mut state.path_text).desired_width(320.0));

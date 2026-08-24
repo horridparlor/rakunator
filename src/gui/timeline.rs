@@ -344,9 +344,24 @@ fn handle_zoom_and_pan(ui: &egui::Ui, hovered: bool, rect: Rect, state: &mut Tim
     if !hovered {
         return;
     }
-    let (scroll_y, ctrl, shift) = ui
-        .ctx()
-        .input(|i| (i.smooth_scroll_delta.y, i.modifiers.command, i.modifiers.shift));
+    let (scroll_x, scroll_y, ctrl, shift) = ui.ctx().input(|i| {
+        (
+            i.smooth_scroll_delta.x,
+            i.smooth_scroll_delta.y,
+            i.modifiers.command,
+            i.modifiers.shift,
+        )
+    });
+
+    // A genuine horizontal scroll gesture (trackpad two-finger swipe, a
+    // mouse's tilt-wheel) always pans the timeline, no modifier needed —
+    // unlike the vertical wheel, which the enclosing track list also wants
+    // for scrolling through tracks, so that one stays modifier-gated below.
+    if scroll_x != 0.0 {
+        state.scroll_x_samples = (state.scroll_x_samples - scroll_x / state.px_per_sample).max(0.0);
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta.x = 0.0);
+    }
+
     let shift = shift && allow_shift_pan;
     if scroll_y == 0.0 || !(ctrl || shift) {
         return;
@@ -661,6 +676,7 @@ pub fn draw_lane(
 
         let mut menu_action: Option<ClipMenuAction> = None;
         response.context_menu(|ui| {
+            ui.spacing_mut().item_spacing.y += 4.0;
             if ui.button("Cut").clicked() {
                 menu_action = Some(ClipMenuAction::Cut);
                 ui.close();
@@ -683,6 +699,7 @@ pub fn draw_lane(
                 ui.close();
             }
             ui.menu_button("Duplicate to track", |ui| {
+                ui.spacing_mut().item_spacing.y += 4.0;
                 for (id, name) in &track_names {
                     if ui.button(name).clicked() {
                         menu_action = Some(ClipMenuAction::DuplicateTo(*id));
@@ -832,7 +849,7 @@ fn draw_clip_rect(
 /// `vertical_zoom` (>= 1.0) scales the drawn amplitude only — never the
 /// underlying audio — clamping to ±1.0 so an over-zoomed loud passage
 /// flattens at the top/bottom of `rect` instead of spilling past it.
-fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Color32, vertical_zoom: f32) {
+pub(super) fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Color32, vertical_zoom: f32) {
     if samples.is_empty() || rect.width() < 1.0 {
         return;
     }

@@ -54,6 +54,7 @@ pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, 
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(100.0));
                 ui.menu_button("...", |ui| {
+                    ui.spacing_mut().item_spacing.y += 4.0;
                     if ui.button("Move up").clicked() {
                         menu_action = Some(TrackMenuAction::MoveUp);
                         ui.close();
@@ -120,20 +121,38 @@ pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, 
             });
 
             ui.horizontal(|ui| {
-                ui.add(
+                let response = ui.add(
                     egui::Slider::new(&mut track.pan_percent, -100..=100)
                         .step_by(5.0)
                         .suffix("%")
                         .text("Pan"),
                 );
+                // Scrolling over the pan slider nudges it by one 5% step
+                // per notch, same granularity as dragging it, so it can be
+                // adjusted without needing to click-drag the thin handle.
+                if response.hovered() {
+                    let notches = super::wheel_notches(ui);
+                    if notches != 0.0 {
+                        let step = (notches.round() as i8) * 5;
+                        track.pan_percent = (track.pan_percent + step).clamp(-100, 100);
+                    }
+                }
             });
 
             ui.horizontal(|ui| {
-                ui.add(
+                let response = ui.add(
                     egui::Slider::new(&mut track.volume, 0.0..=1.5)
                         .step_by(0.05)
                         .text("Vol"),
                 );
+                // Scrolling over the volume slider nudges it by one 0.05
+                // step per notch, same granularity as dragging it.
+                if response.hovered() {
+                    let notches = super::wheel_notches(ui);
+                    if notches != 0.0 {
+                        track.volume = (track.volume + notches.round() * 0.05).clamp(0.0, 1.5);
+                    }
+                }
             });
 
             ui.horizontal(|ui| {

@@ -3,12 +3,36 @@ mod export_dialog;
 mod help_dialog;
 mod meter_widget;
 mod project_file_dialog;
+mod record_monitor;
 mod timeline;
 mod toolbar;
 mod track_view;
 mod wave_dialog;
 
 pub use app::RakunatorApp;
+
+/// Net physical wheel notches scrolled this frame (positive = scrolled
+/// up/away), read from raw wheel events rather than `smooth_scroll_delta`.
+/// The latter keeps reporting a nonzero, decaying value for several frames
+/// after a single flick (it's meant for smooth continuous panning/zooming),
+/// which would apply a discrete stepped adjustment — a slider's scroll step,
+/// say — many times over for what the user felt as one flick of the wheel.
+/// `Point`-unit deltas (trackpads) are normalized by the same 40px-per-line
+/// speed egui itself defaults to, so one notch feels the same either way.
+pub(crate) fn wheel_notches(ui: &egui::Ui) -> f32 {
+    ui.ctx().input(|i| {
+        i.events.iter().fold(0.0, |acc, e| {
+            let egui::Event::MouseWheel { unit, delta, .. } = e else {
+                return acc;
+            };
+            acc + match unit {
+                egui::MouseWheelUnit::Line => delta.y,
+                egui::MouseWheelUnit::Point => delta.y / 40.0,
+                egui::MouseWheelUnit::Page => delta.y,
+            }
+        })
+    })
+}
 
 /// Height of one track's header + timeline lane row.
 pub(crate) const ROW_HEIGHT: f32 = 72.0;

@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use super::{
     export_dialog, export_dialog::ExportDialogState, help_dialog, project_file_dialog,
-    project_file_dialog::ProjectFileDialogState, timeline, timeline::TimelineState, toolbar,
-    toolbar::EffectsState, track_view, wave_dialog, wave_dialog::WaveDialogState, HEADER_WIDTH,
-    ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP, TRACK_ROW_STEP,
+    project_file_dialog::ProjectFileDialogState, record_monitor, timeline, timeline::TimelineState,
+    toolbar, toolbar::EffectsState, track_view, wave_dialog, wave_dialog::WaveDialogState,
+    HEADER_WIDTH, ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP, TRACK_ROW_STEP,
 };
 
 pub struct RakunatorApp {
@@ -36,8 +36,17 @@ pub struct RakunatorApp {
     pub(super) record_started_at: Option<std::time::Instant>,
     /// Where the playhead was sitting when recording started, so the
     /// captured audio gets baked into a clip starting there instead of at
-    /// the very beginning of the timeline.
+    /// the very beginning of the timeline, and so the playhead can return
+    /// there once recording stops.
     pub(super) record_start_sample: Option<u64>,
+    /// The single track that was selected when recording started, if any —
+    /// the captured audio is added as a new clip on that track instead of
+    /// a freshly created one.
+    pub(super) record_target_track: Option<TrackId>,
+    /// When the input last clipped, so the live recording monitor's
+    /// "CLIPPING" warning stays visible for a moment instead of flashing
+    /// for a single frame.
+    pub(super) record_clip_flash: Option<std::time::Instant>,
 }
 
 impl RakunatorApp {
@@ -67,6 +76,8 @@ impl RakunatorApp {
             recording: None,
             record_started_at: None,
             record_start_sample: None,
+            record_target_track: None,
+            record_clip_flash: None,
         }
     }
 
@@ -89,8 +100,10 @@ impl RakunatorApp {
     /// Opens the default microphone and starts capturing, from wherever the
     /// playhead currently sits. Also starts playback, so the timeline
     /// scrolls and existing tracks are audible as a click/backing reference
-    /// while recording. Does nothing if already recording, or if there's no
-    /// input device available.
+    /// while recording. If exactly one track is selected, the capture lands
+    /// as a new clip on that track once it stops; otherwise it lands on a
+    /// freshly created track. Does nothing if already recording, or if
+    /// there's no input device available.
     pub(super) fn start_recording(&mut self) {
         if self.recording.is_some() {
             return;
@@ -100,25 +113,37 @@ impl RakunatorApp {
                 self.recording = Some(recorder);
                 self.record_started_at = Some(std::time::Instant::now());
                 self.record_start_sample = Some(self.engine.position());
+                self.record_target_track = {
+                    let project = self.project.lock().unwrap();
+                    let mut selected = project.selected_tracks.iter();
+                    match (selected.next(), selected.next()) {
+                        (Some(&id), None) => Some(id),
+                        _ => None,
+                    }
+                };
                 self.start_playback();
             }
             None => eprintln!("recording failed: no microphone/input device available"),
         }
     }
 
-    /// Stops capturing and playback, and bakes whatever was recorded into a
-    /// fresh track at the sample position recording started from, named
-    /// after how long it ran, converted to the project's sample rate and
-    /// channel layout (see `to_project_format`). Does nothing if not
-    /// currently recording.
+    /// Stops capturing and playback, returns the playhead to where
+    /// recording started, and bakes whatever was recorded into a clip at
+    /// that position — on the track selected when recording started if
+    /// there was exactly one, otherwise a fresh track — converted to the
+    /// project's sample rate and channel layout (see `to_project_format`).
+    /// Does nothing if not currently recording.
     pub(super) fn stop_recording(&mut self) {
         let Some(recorder) = self.recording.take() else {
             return;
         };
         self.record_started_at = None;
-        self.engine.pause();
-        self.play_start_position = None;
+        self.record_clip_flash = None;
         let start_sample = self.record_start_sample.take().unwrap_or(0);
+        let target_track = self.record_target_track.take();
+        self.engine.pause();
+        self.engine.seek(start_sample);
+        self.play_start_position = None;
         let channels = recorder.channels;
         let device_rate = recorder.sample_rate_hz;
         let raw = recorder.stop();
@@ -131,11 +156,19 @@ impl RakunatorApp {
         if samples.is_empty() {
             return;
         }
-        let name = format!("Recording {}", project.tracks.len() + 1);
-        let target = project.add_track();
-        if let Some(track) = project.track_mut(target) {
-            track.name = name.clone();
-        }
+
+        let target = target_track
+            .filter(|id| project.track(*id).is_some())
+            .unwrap_or_else(|| {
+                let name = format!("Recording {}", project.tracks.len() + 1);
+                let id = project.add_track();
+                if let Some(track) = project.track_mut(id) {
+                    track.name = name;
+                }
+                id
+            });
+        let clip_index = project.track(target).map_or(0, |t| t.clips.len());
+        let name = format!("Recording {}", clip_index + 1);
         project.add_clip_channels(target, name, start_sample, samples, out_channels);
     }
 }
@@ -198,6 +231,25 @@ impl eframe::App for RakunatorApp {
             .show(ui, |ui| {
                 toolbar::draw(ui, self);
             });
+
+        if let Some(recorder) = self.recording.as_ref() {
+            if recorder.take_clipped() {
+                self.record_clip_flash = Some(std::time::Instant::now());
+            }
+            let clipping_recently = self
+                .record_clip_flash
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(1200));
+            egui::Panel::top("record_monitor")
+                .frame(egui::Frame::default().inner_margin(egui::Margin {
+                    left: 8,
+                    right: 8,
+                    top: 0,
+                    bottom: 6,
+                }))
+                .show(ui, |ui| {
+                    record_monitor::draw(ui, recorder, clipping_recently);
+                });
+        }
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_enabled_ui(!recording, |ui| {
@@ -355,12 +407,12 @@ fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
 const NUDGE_SECONDS: f32 = 0.05;
 
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
-/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them;
-/// Left/Right nudges the selected clip(s) in time; plain Space toggles
-/// play/pause (resuming from wherever it was paused); plain S splits the
-/// selected clip(s) at the playhead. All keyboard handling is skipped while
-/// a text field (e.g. a track name) has focus, so typing a space or an "s"
-/// doesn't hijack the transport.
+/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
+/// adds a new track; Left/Right nudges the selected clip(s) in time; plain
+/// Space toggles play/pause (resuming from wherever it was paused); plain S
+/// splits the selected clip(s) at the playhead. All keyboard handling is
+/// skipped while a text field (e.g. a track name) has focus, so typing a
+/// space or an "s" doesn't hijack the transport.
 fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
@@ -420,6 +472,13 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
     if redo {
         app.project.lock().unwrap().redo();
+    }
+
+    let add_track = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::N));
+    if add_track {
+        app.project.lock().unwrap().add_track();
     }
 
     if repeat_effect {

@@ -40,6 +40,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     egui::Window::new("Export Project")
         .open(&mut open)
         .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y += 4.0;
             ui.label("Renders the full multi-track mixdown to <name>.wav and <name>.mp3 in your Downloads folder.");
             ui.horizontal(|ui| {
                 ui.label("Name:");

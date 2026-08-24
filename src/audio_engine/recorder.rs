@@ -3,7 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{InputCallbackInfo, Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::HeapRb;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -23,6 +23,13 @@ pub struct Recorder {
     collecting: Arc<AtomicBool>,
     collector: Option<JoinHandle<()>>,
     buffer: Arc<Mutex<Vec<f32>>>,
+    /// Decaying peak input level (0.0-1.0+), updated directly in the audio
+    /// callback so the GUI can poll it every frame without touching the
+    /// (potentially large, mutex-guarded) capture buffer.
+    peak: Arc<AtomicU32>,
+    /// Latched by the callback whenever a sample hits/exceeds full scale;
+    /// the GUI reads-and-clears it each frame to drive a clip warning.
+    clipped: Arc<AtomicBool>,
     pub channels: usize,
     pub sample_rate_hz: u32,
 }
@@ -43,16 +50,28 @@ impl Recorder {
         let rb = HeapRb::<f32>::new(RING_BUFFER_FRAMES * channels);
         let (mut producer, mut consumer) = rb.split();
 
-        let stream = device
-            .build_input_stream(
-                stream_config,
-                move |data: &[f32], _: &InputCallbackInfo| {
-                    producer.push_slice(data);
-                },
-                |err| eprintln!("input stream error: {err}"),
-                None,
-            )
-            .ok()?;
+        let peak = Arc::new(AtomicU32::new(0));
+        let clipped = Arc::new(AtomicBool::new(false));
+        let stream = {
+            let peak = Arc::clone(&peak);
+            let clipped = Arc::clone(&clipped);
+            device
+                .build_input_stream(
+                    stream_config,
+                    move |data: &[f32], _: &InputCallbackInfo| {
+                        let block_peak = data.iter().fold(0f32, |m, s| m.max(s.abs()));
+                        if block_peak >= 0.999 {
+                            clipped.store(true, Ordering::Relaxed);
+                        }
+                        let prev = f32::from_bits(peak.load(Ordering::Relaxed));
+                        peak.store((prev * 0.9).max(block_peak).to_bits(), Ordering::Relaxed);
+                        producer.push_slice(data);
+                    },
+                    |err| eprintln!("input stream error: {err}"),
+                    None,
+                )
+                .ok()?
+        };
         stream.play().ok()?;
 
         let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -81,9 +100,32 @@ impl Recorder {
             collecting,
             collector: Some(collector),
             buffer,
+            peak,
+            clipped,
             channels,
             sample_rate_hz,
         })
+    }
+
+    /// Current decaying peak input level, roughly 0.0-1.0 (can exceed 1.0
+    /// briefly on a hot signal before the decay catches up).
+    pub fn peak_level(&self) -> f32 {
+        f32::from_bits(self.peak.load(Ordering::Relaxed))
+    }
+
+    /// True if any sample captured since the last call hit/exceeded full
+    /// scale. Clears the flag, so call this once per frame.
+    pub fn take_clipped(&self) -> bool {
+        self.clipped.swap(false, Ordering::Relaxed)
+    }
+
+    /// A copy of roughly the last `max_samples` interleaved samples
+    /// captured so far (fewer if less has been recorded), for a live
+    /// waveform preview while recording.
+    pub fn recent_samples(&self, max_samples: usize) -> Vec<f32> {
+        let buffer = self.buffer.lock().unwrap();
+        let start = buffer.len().saturating_sub(max_samples);
+        buffer[start..].to_vec()
     }
 
     /// Stops capturing and returns every sample recorded, interleaved at

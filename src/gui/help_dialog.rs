@@ -1,4 +1,5 @@
 use super::RakunatorApp;
+use crate::export::config::APP_VERSION;
 
 /// Draws the "Help" window: a readable reference of every shortcut and
 /// mouse interaction the app supports, grouped by topic.
@@ -20,16 +21,19 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 row(ui, "Zoom In / Zoom Out (toolbar)", "Zoom the timeline");
                 row(ui, "Ctrl+Scroll on the timeline", "Zoom in/out (may be intercepted by some window managers — use the buttons if so)");
                 row(ui, "Shift+Scroll on the ruler", "Pan horizontally");
+                row(ui, "Horizontal scroll (trackpad swipe / tilt-wheel) on the ruler or a track", "Pan horizontally, no modifier needed");
                 row(ui, "Shift+Scroll on a track", "Zoom that track's waveform vertically, to see quiet detail (visual only)");
+                row(ui, "Scroll over the Pan / Vol slider", "Nudge it by one step (5% / 0.05)");
                 row(ui, "Bottom scrollbar", "Click/drag to scroll through the song");
 
                 section(ui, "Recording");
                 row(
                     ui,
                     "\u{25cf} (toolbar, next to Play) / \"R\"",
-                    "Capture the default microphone onto a new track, from wherever the playhead is; click it again, or press R or Space, to stop (hover it to see elapsed time)",
+                    "Capture the default microphone from wherever the playhead is, onto the selected track if exactly one is selected, otherwise a new track; click it again, or press R or Space, to stop (hover it to see elapsed time)",
                 );
-                row(ui, "While recording", "Playback runs so you can hear/see existing tracks as you record; the rest of the UI is locked until you stop");
+                row(ui, "While recording", "Playback runs so you can hear/see existing tracks as you record; a live waveform strip below the toolbar shows the input level, turning red with a \"CLIPPING\" warning if it hits full scale; the rest of the UI is locked until you stop");
+                row(ui, "Stopping a recording", "Playback stops and the playhead returns to where the recording started");
 
                 section(ui, "Selecting clips & tracks");
                 row(ui, "Click the top half of a clip", "Select just that clip");
@@ -66,7 +70,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 row(ui, "Effects apply to", "Every clip on the selected track(s) if any are selected, otherwise the clip selection");
 
                 section(ui, "Tracks");
-                row(ui, "Add Track (toolbar)", "Add a new empty track");
+                row(ui, "Add Track (toolbar) / Ctrl+N", "Add a new empty track");
                 row(ui, "Track \"...\" menu", "Move up/down/top/bottom/by N, duplicate, reset pan & volume, delete");
                 row(ui, "Pan slider", "5% steps — left/right balance on stereo tracks, equal-power pan on mono tracks");
                 row(ui, "Mute (M) / Solo (S)", "Standard mixing controls — soloing any track mutes all non-soloed ones");
@@ -83,7 +87,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.vertical_centered(|ui| {
-                    ui.weak("\u{00A9}2026 Rakuel");
+                    ui.weak(format!("Rakunator v{APP_VERSION} \u{2014} \u{00A9}2026 Rakuel"));
                 });
             });
         });
