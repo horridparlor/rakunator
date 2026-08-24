@@ -85,6 +85,9 @@ pub struct EffectsState {
     pub rattle_stretch_final_tempo_percent: f32,
     pub rattle_stretch_initial_pitch_semitones: f32,
     pub rattle_stretch_final_pitch_semitones: f32,
+    /// Total [A, B] clips Rattle generates (always an even number of whole
+    /// pairs).
+    pub rattle_repeat_count: u32,
 
     /// Pan Toggle's own high/low dB endpoints (the fade-in side ramps
     /// low -> high, the fade-out side high -> low) and which physical
@@ -187,6 +190,8 @@ pub struct EffectsState {
     editing_rattle_stretch_initial_pitch_semitones: f32,
     #[serde(skip)]
     editing_rattle_stretch_final_pitch_semitones: f32,
+    #[serde(skip)]
+    editing_rattle_repeat_count: u32,
 
     #[serde(skip)]
     editing_pan_toggle_high_db: f32,
@@ -272,6 +277,7 @@ impl Default for EffectsState {
             rattle_stretch_final_tempo_percent: 0.0,
             rattle_stretch_initial_pitch_semitones: 0.0,
             rattle_stretch_final_pitch_semitones: 0.0,
+            rattle_repeat_count: 24,
 
             pan_toggle_high_db: 6.0,
             pan_toggle_low_db: -4.0,
@@ -331,6 +337,7 @@ impl Default for EffectsState {
             editing_rattle_stretch_final_tempo_percent: 0.0,
             editing_rattle_stretch_initial_pitch_semitones: 0.0,
             editing_rattle_stretch_final_pitch_semitones: 0.0,
+            editing_rattle_repeat_count: 24,
 
             editing_pan_toggle_high_db: 6.0,
             editing_pan_toggle_low_db: -4.0,
@@ -804,6 +811,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                 app.effects.rattle_stretch_initial_pitch_semitones;
             app.effects.editing_rattle_stretch_final_pitch_semitones =
                 app.effects.rattle_stretch_final_pitch_semitones;
+            app.effects.editing_rattle_repeat_count = app.effects.rattle_repeat_count;
             app.effects.editing_pan_toggle_high_db = app.effects.pan_toggle_high_db;
             app.effects.editing_pan_toggle_low_db = app.effects.pan_toggle_low_db;
             app.effects.editing_pan_toggle_direction = app.effects.pan_toggle_direction;
@@ -873,6 +881,7 @@ fn rattle_params(effects: &EffectsState) -> RattleParams {
             initial_pitch_semitones: effects.rattle_stretch_initial_pitch_semitones,
             final_pitch_semitones: effects.rattle_stretch_final_pitch_semitones,
         },
+        repeat_count: effects.rattle_repeat_count,
     }
 }
 
@@ -1069,10 +1078,10 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         ui.label("Sliding Stretch: ramps tempo/pitch from the clip's start to its end.");
         egui::Grid::new("sliding_stretch_grid").num_columns(2).show(ui, |ui| {
             ui.label("Initial Tempo Change (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_tempo_percent).range(-90.0..=500.0).speed(0.5));
             ui.end_row();
             ui.label("Final Tempo Change (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_tempo_percent).range(-90.0..=500.0).speed(0.5));
             ui.end_row();
             ui.label("Initial Pitch Shift (semitones):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
@@ -1104,10 +1113,10 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             });
             ui.end_row();
             ui.label("Sliding Stretch Initial Tempo (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_tempo_percent).range(-90.0..=500.0).speed(0.5));
             ui.end_row();
             ui.label("Sliding Stretch Final Tempo (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_tempo_percent).range(-90.0..=500.0).speed(0.5));
             ui.end_row();
             ui.label("Sliding Stretch Initial Pitch (st):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
@@ -1115,7 +1124,12 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.label("Sliding Stretch Final Pitch (st):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
             ui.end_row();
+            ui.label("Repeat Count (A+B clips):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_repeat_count).range(2..=128).speed(2.0));
+            ui.end_row();
         });
+        // Always an even number of whole [A, B] pairs, in steps of 2.
+        app.effects.editing_rattle_repeat_count = (app.effects.editing_rattle_repeat_count / 2).max(1) * 2;
 
         ui.add_space(8.0);
         ui.label("Pan Toggle: splits a stereo clip's channels, fades one up and the other down.");
@@ -1237,6 +1251,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             app.effects.editing_rattle_stretch_initial_pitch_semitones;
         app.effects.rattle_stretch_final_pitch_semitones =
             app.effects.editing_rattle_stretch_final_pitch_semitones;
+        app.effects.rattle_repeat_count = app.effects.editing_rattle_repeat_count;
         app.effects.pan_toggle_high_db = app.effects.editing_pan_toggle_high_db;
         app.effects.pan_toggle_low_db = app.effects.editing_pan_toggle_low_db;
         app.effects.pan_toggle_direction = app.effects.editing_pan_toggle_direction;

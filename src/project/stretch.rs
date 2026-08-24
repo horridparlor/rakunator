@@ -68,6 +68,26 @@ fn normalized_correlation(a: &[f32], b: &[f32]) -> f32 {
     dot / (na.sqrt() * nb.sqrt() + 1e-9)
 }
 
+fn window_len_frames(sample_rate: f32) -> usize {
+    (((sample_rate * 0.04) as usize) / 2 * 2).max(64) // ~40ms, forced even
+}
+
+/// The hop size (in frames) between successive synthesis windows in
+/// `apply_time_pitch_ramp` — exactly half a window. A single call's output
+/// is a valid overlap-add reconstruction everywhere *except* its first and
+/// last `synth_hop_frames` frames: elsewhere, two overlapping Hann windows
+/// sum to a constant 1.0, but the very first/last window has no neighbor
+/// to complement it there, so those edges are each a lone, un-summed Hann
+/// ramp (silent at the very edge, rising/falling to full over that span).
+/// Chaining two independent calls back-to-back therefore leaves a
+/// `2 * synth_hop_frames`-long dip toward silence at the seam — fixed by
+/// overlap-adding the tail of one with the head of the next by exactly
+/// this many frames (see `Project::apply_rattle`), which reconstructs the
+/// same constant-unity sum a single continuous call would have produced.
+pub fn synth_hop_frames(sample_rate: f32) -> usize {
+    window_len_frames(sample_rate) / 2
+}
+
 /// Applies the tempo/pitch ramp to `source` (interleaved, `channels`
 /// channels) and returns a new buffer. The output length follows from
 /// however long it takes to consume the source at the given tempo
@@ -78,7 +98,7 @@ pub fn apply_time_pitch_ramp(source: &[f32], channels: usize, sample_rate: f32, 
     }
     let total_frames = source.len() / channels;
 
-    let window_len = (((sample_rate * 0.04) as usize) / 2 * 2).max(64); // ~40ms, forced even
+    let window_len = window_len_frames(sample_rate);
     let synth_hop = window_len / 2;
     // A tight tolerance (a few ms) around the tempo-driven ideal position —
     // just enough to dodge phase discontinuities, not so much that the

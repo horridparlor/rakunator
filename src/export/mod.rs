@@ -28,16 +28,23 @@ pub fn export_project(project: &Project, base_name: &str) {
         interleaved.push(right);
     }
 
-    let base_name = sanitize_file_name(base_name);
-    let export_dir = resolve_export_dir();
-    let wav_path = export_dir.join(format!("{base_name}.wav"));
-    let mp3_path = export_dir.join(format!("{base_name}.mp3"));
+    let (wav_path, mp3_path) = export_paths(base_name);
 
     wav::write_wav(&wav_path, &interleaved);
     mp3::write_mp3(&mp3_path, &interleaved);
 
     println!("wrote {}", wav_path.display());
     println!("wrote {}", mp3_path.display());
+}
+
+/// The exact `.wav`/`.mp3` paths `export_project` would write for
+/// `base_name` — exposed so the GUI can check whether either already
+/// exists (and confirm before overwriting) without duplicating the
+/// sanitizing/directory-resolution logic.
+pub fn export_paths(base_name: &str) -> (PathBuf, PathBuf) {
+    let base_name = sanitize_file_name(base_name);
+    let export_dir = resolve_export_dir();
+    (export_dir.join(format!("{base_name}.wav")), export_dir.join(format!("{base_name}.mp3")))
 }
 
 /// Strips path separators (and trims whitespace) from a user-typed export

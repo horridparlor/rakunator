@@ -61,8 +61,11 @@ pub fn spawn(
 
 /// Mixes every audible track at sample index `n`, updating each track's
 /// live meter with its gained peak contribution along the way. Bottoms out
-/// in the same `is_audible`/`pan_gains`/`track_frame` primitives as
-/// `mix::mix_frame`, so realtime playback can't drift from offline export.
+/// in the same `is_audible`/`pan_gains`/`pan_balance_gains`/`track_frame`/
+/// `track_frame_stereo` primitives as `mix::mix_frame` (including its
+/// `channels >= 2` branch — a stereo track's actual left/right content,
+/// not just its left channel duplicated per `pan_gains`), so realtime
+/// playback can't drift from offline export.
 fn mix_frame_with_meters(project: &Project, n: u64, meters: &Meters) -> (f32, f32) {
     let any_soloed = project.tracks.iter().any(|t| t.soloed);
     let mut left = 0.0f32;
@@ -72,10 +75,15 @@ fn mix_frame_with_meters(project: &Project, n: u64, meters: &Meters) -> (f32, f3
             meters.reset(i);
             continue;
         }
-        let mono = mix::track_frame(track, n);
-        let (left_gain, right_gain) = mix::pan_gains(track.pan_percent, track.volume);
-        let left_sample = mono * left_gain;
-        let right_sample = mono * right_gain;
+        let (left_sample, right_sample) = if track.channels >= 2 {
+            let (l, r) = mix::track_frame_stereo(track, n);
+            let (left_gain, right_gain) = mix::pan_balance_gains(track.pan_percent, track.volume);
+            (l * left_gain, r * right_gain)
+        } else {
+            let mono = mix::track_frame(track, n);
+            let (left_gain, right_gain) = mix::pan_gains(track.pan_percent, track.volume);
+            (mono * left_gain, mono * right_gain)
+        };
         left += left_sample;
         right += right_sample;
         meters.update(i, left_sample.abs(), right_sample.abs());
@@ -99,5 +107,34 @@ fn write_frame(frame: &mut [f32], left: f32, right: f32) {
                 *sample = 0.0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::Project;
+
+    /// Regression test for a divergence from `mix::mix_frame`: this
+    /// function used to always call the mono-only `track_frame`/`pan_gains`
+    /// pair regardless of `track.channels`, so a stereo track's right
+    /// channel was never even read during realtime playback — silently
+    /// collapsing every stereo track to its left channel, panned, even
+    /// though offline export (which goes through `mix::mix_frame` directly)
+    /// rendered it correctly. Panned hard right, a stereo clip with
+    /// different left/right content must pass the right channel through
+    /// unchanged, not the left channel's `pan_gains`-panned copy.
+    #[test]
+    fn mix_frame_with_meters_uses_real_stereo_content_not_just_left_channel() {
+        let mut project = Project::new(48_000);
+        let track_id = project.tracks[0].id;
+        let interleaved: Vec<f32> = (0..20).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        project.add_clip_channels(track_id, "stereo".into(), 0, interleaved, 2);
+        project.track_mut(track_id).unwrap().pan_percent = 100; // hard right
+
+        let meters = Meters::new();
+        let (left, right) = mix_frame_with_meters(&project, 0, &meters);
+        assert!(left.abs() < 1e-6, "hard-right pan should silence the left channel, got {left}");
+        assert!((right - (-1.0)).abs() < 1e-6, "right channel should pass its actual content through, got {right}");
     }
 }

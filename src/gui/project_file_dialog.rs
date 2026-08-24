@@ -7,6 +7,10 @@ pub struct ProjectFileDialogState {
     pub open: bool,
     path_text: String,
     status: Option<String>,
+    /// Set instead of saving immediately when "Save" targets a path that
+    /// already exists — the confirm popup (`draw_overwrite_confirm`) reads
+    /// this, and actually saves only once the user confirms.
+    confirm_overwrite_path: Option<PathBuf>,
 }
 
 impl Default for ProjectFileDialogState {
@@ -18,6 +22,7 @@ impl Default for ProjectFileDialogState {
             open: false,
             path_text: default_path.display().to_string(),
             status: None,
+            confirm_overwrite_path: None,
         }
     }
 }
@@ -91,17 +96,14 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
 
     if save {
         let path = PathBuf::from(&app.project_file_dialog.path_text);
-        let snapshot = app.project.lock().unwrap().clone();
-        let result = project::persistence::save_project(&snapshot, &path);
-        let now = timestamp();
-        app.project_file_dialog.status = Some(match result {
-            Ok(()) => {
-                app.project_name = file_stem(&path);
-                format!("Saved to {} at {now}", path.display())
-            }
-            Err(e) => format!("Save failed at {now}: {e}"),
-        });
+        if path.exists() {
+            app.project_file_dialog.confirm_overwrite_path = Some(path);
+        } else {
+            do_save(app, &path);
+        }
     }
+
+    draw_overwrite_confirm(ctx, app);
 
     if load {
         let path = PathBuf::from(&app.project_file_dialog.path_text);
@@ -117,6 +119,56 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             }
         }
     }
+}
+
+/// A small modal on top of the "Project File" window, shown instead of
+/// saving immediately whenever "Save" targets a path that already exists
+/// on disk — confirms before silently overwriting it.
+fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
+    let Some(path) = app.project_file_dialog.confirm_overwrite_path.clone() else {
+        return;
+    };
+
+    let mut overwrite = false;
+    let mut cancel = false;
+    egui::Window::new("Overwrite file?")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!("{} already exists.", path.display()));
+            ui.label("Overwrite it?");
+            ui.horizontal(|ui| {
+                if ui.button("Overwrite").clicked() {
+                    overwrite = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if overwrite {
+        do_save(app, &path);
+        app.project_file_dialog.confirm_overwrite_path = None;
+    } else if cancel {
+        app.project_file_dialog.confirm_overwrite_path = None;
+    }
+}
+
+/// Serializes the current project to `path`, updating the status line and
+/// (on success) `project_name` — the actual save, run either directly (the
+/// target didn't already exist) or after `draw_overwrite_confirm`.
+fn do_save(app: &mut RakunatorApp, path: &std::path::Path) {
+    let snapshot = app.project.lock().unwrap().clone();
+    let result = project::persistence::save_project(&snapshot, path);
+    let now = timestamp();
+    app.project_file_dialog.status = Some(match result {
+        Ok(()) => {
+            app.project_name = file_stem(path);
+            format!("Saved to {} at {now}", path.display())
+        }
+        Err(e) => format!("Save failed at {now}: {e}"),
+    });
 }
 
 /// Current wall-clock time (HH:MM:SS), so repeated Save/Load presses show

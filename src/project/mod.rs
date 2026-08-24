@@ -30,11 +30,20 @@ pub fn db_to_gain(db: f32) -> f32 {
 /// `stretch::apply_time_pitch_ramp`, used by the Tempo/Sliding
 /// Stretch/Rattle effects instead).
 fn resample_for_pitch(source: &[f32], channels: usize, semitones: f32) -> Vec<f32> {
+    if channels == 0 || source.is_empty() {
+        return Vec::new();
+    }
     let frames = source.len() / channels;
     let ratio = 2f32.powf(semitones / 12.0);
     let new_frames = ((frames as f32) / ratio).round().max(1.0) as usize;
     let mut resampled = vec![0.0f32; new_frames * channels];
-    let frame_sample = |frame: usize, ch: usize| -> f32 { source.get(frame * channels + ch).copied().unwrap_or(0.0) };
+    // Clamped to the last valid frame rather than defaulting to 0.0 past
+    // the end — otherwise the interpolation between the last real frame
+    // and an out-of-bounds "phantom" 0.0 fades the tail toward silence
+    // (most visible when lengthening, e.g. a pitch-down shift, where
+    // `idx + 1` frequently lands one frame past the source's end).
+    let frame_sample =
+        |frame: usize, ch: usize| -> f32 { source[frame.min(frames.saturating_sub(1)) * channels + ch] };
     for ch in 0..channels {
         for i in 0..new_frames {
             let src_pos = i as f32 * ratio;
@@ -46,6 +55,27 @@ fn resample_for_pitch(source: &[f32], channels: usize, semitones: f32) -> Vec<f3
         }
     }
     resampled
+}
+
+/// Appends `variant` (interleaved, `channels` channels) onto `combined`,
+/// summing the last `overlap_frames` frames already in `combined` with the
+/// first `overlap_frames` frames of `variant` instead of placing them back
+/// to back — see `Project::apply_rattle`, the only caller. `overlap_frames`
+/// is clamped to whichever of the two buffers is shorter, so a very short
+/// variant can't underflow `combined`'s length.
+fn append_with_overlap_add(combined: &mut Vec<f32>, variant: &[f32], channels: usize, overlap_frames: usize) {
+    if combined.is_empty() || channels == 0 {
+        combined.extend_from_slice(variant);
+        return;
+    }
+    let combined_frames = combined.len() / channels;
+    let variant_frames = variant.len() / channels;
+    let overlap = overlap_frames.min(combined_frames).min(variant_frames);
+    let overlap_start = combined.len() - overlap * channels;
+    for (dst, src) in combined[overlap_start..].iter_mut().zip(&variant[..overlap * channels]) {
+        *dst += src;
+    }
+    combined.extend_from_slice(&variant[overlap * channels..]);
 }
 
 /// Converts interleaved `samples` (`from` channels) to `to` channels: mono
@@ -144,6 +174,9 @@ pub struct RattleParams {
     pub fade_in_start_gain: f32,
     pub fade_in_end_gain: f32,
     pub stretch: stretch::RampParams,
+    /// Total [A, B] clips generated (always rounded down to an even number
+    /// of whole pairs — see `Project::apply_rattle`).
+    pub repeat_count: u32,
 }
 
 /// Removes each channel's DC offset (subtracts its mean), then scales the
@@ -1214,15 +1247,24 @@ impl Project {
 
     /// Builds two pitch/tempo-shifted variants of a clip ("A": pitched up
     /// and sped/slowed by `tempo_x_percent`; "B": pitched down and
-    /// sped/slowed by `-tempo_y_percent`), lays out 12 back-to-back [A, B]
-    /// repetitions (24 clips) starting right after the original clip ends
-    /// (same convention as `duplicate_selection` — the copy goes right
-    /// after the source, not on top of it), joins them into one clip, then
-    /// applies its own Adjustable Fade In and its own Sliding Stretch
-    /// (independent settings from those effects' regular Effects-menu
-    /// entries). Destructive/generative: the original clip is left in
-    /// place; this adds new clips alongside it (undoable, like any other
-    /// clip-adding operation).
+    /// sped/slowed by `-tempo_y_percent`), lays out `params.repeat_count / 2`
+    /// [A, B] repetitions starting right after the original clip ends (same
+    /// convention as
+    /// `duplicate_selection` — the copy goes right after the source, not on
+    /// top of it) into one new clip, then applies its own Adjustable Fade
+    /// In and its own Sliding Stretch (independent settings from those
+    /// effects' regular Effects-menu entries). Destructive/generative: the
+    /// original clip is left in place; this adds a new clip alongside it
+    /// (undoable, like any other clip-adding operation).
+    ///
+    /// Each repetition is overlap-added onto the previous by
+    /// `stretch::synth_hop_frames` rather than placed strictly back-to-back
+    /// — `apply_time_pitch_ramp`'s output is only a valid reconstruction
+    /// away from its very first/last `synth_hop_frames`, which are each a
+    /// lone, un-summed Hann ramp (see that function's docs); a cold splice
+    /// between two independent outputs would leave an audible silent gap
+    /// there, and summing the overlap reconstructs the same constant-unity
+    /// envelope a single continuous call would have produced.
     pub fn apply_rattle(&mut self, clip_id: ClipId, params: &RattleParams) {
         let Some(track_id) = self.find_clip_track(clip_id) else {
             return;
@@ -1264,36 +1306,27 @@ impl Project {
             },
         );
 
-        self.push_undo();
+        let overlap_frames = stretch::synth_hop_frames(sample_rate);
         let variants = [&a_final, &b_final];
-        let mut cursor = base_start;
-        let mut placed_ids = Vec::new();
-        for _ in 0..12 {
-            for (i, variant) in variants.iter().enumerate() {
-                let id = self.alloc_clip_id();
-                let frames = (variant.len() / ch.max(1)) as u64;
-                let label = if i == 0 { "Rattle A" } else { "Rattle B" };
-                let Some(track) = self.track_mut(track_id) else {
-                    return;
-                };
-                track.clips.push(Clip::from_samples_channels(
-                    id,
-                    label.to_string(),
-                    cursor,
-                    (*variant).clone(),
-                    channels,
-                ));
-                placed_ids.push(id);
-                cursor += frames;
+        let pairs = (params.repeat_count / 2).max(1);
+        let mut combined: Vec<f32> = Vec::new();
+        for _ in 0..pairs {
+            for variant in &variants {
+                append_with_overlap_add(&mut combined, variant, ch, overlap_frames);
             }
         }
 
-        let joined = self.join_clips(&placed_ids);
-        let Some(&joined_id) = joined.first() else {
+        self.push_undo();
+        let combined_id = self.alloc_clip_id();
+        let Some(track) = self.track_mut(track_id) else {
             return;
         };
-        self.apply_adjustable_fade(joined_id, params.fade_in_start_gain, params.fade_in_end_gain);
-        self.apply_sliding_stretch(joined_id, &params.stretch);
+        track
+            .clips
+            .push(Clip::from_samples_channels(combined_id, "Rattle".to_string(), base_start, combined, channels));
+
+        self.apply_adjustable_fade(combined_id, params.fade_in_start_gain, params.fade_in_end_gain);
+        self.apply_sliding_stretch(combined_id, &params.stretch);
     }
 
     /// Shifts a clip's pitch by `semitones` (positive = up, negative =

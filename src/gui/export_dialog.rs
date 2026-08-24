@@ -7,6 +7,10 @@ use super::RakunatorApp;
 pub struct ExportDialogState {
     pub open: bool,
     file_name: String,
+    /// Set instead of exporting immediately when the target `.wav`/`.mp3`
+    /// already exists — the confirm popup reads this, and only starts the
+    /// export once the user confirms.
+    confirm_overwrite: Option<String>,
 }
 
 impl Default for ExportDialogState {
@@ -14,6 +18,7 @@ impl Default for ExportDialogState {
         ExportDialogState {
             open: false,
             file_name: "Untitled Project".to_string(),
+            confirm_overwrite: None,
         }
     }
 }
@@ -54,12 +59,61 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     app.export_dialog.open = open;
 
     if do_export {
-        let project = Arc::clone(&app.project);
         let file_name = app.export_dialog.file_name.clone();
-        thread::spawn(move || {
-            let snapshot = project.lock().unwrap().clone();
-            export::export_project(&snapshot, &file_name);
-        });
-        app.export_dialog.open = false;
+        let (wav_path, mp3_path) = export::export_paths(&file_name);
+        if wav_path.exists() || mp3_path.exists() {
+            app.export_dialog.confirm_overwrite = Some(file_name);
+        } else {
+            start_export(app, file_name);
+        }
     }
+
+    draw_overwrite_confirm(ctx, app);
+}
+
+/// A small modal on top of the "Export Project" window, shown instead of
+/// exporting immediately whenever the target `.wav`/`.mp3` already exists
+/// on disk — confirms before silently overwriting either.
+fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
+    let Some(file_name) = app.export_dialog.confirm_overwrite.clone() else {
+        return;
+    };
+    let (wav_path, mp3_path) = export::export_paths(&file_name);
+
+    let mut overwrite = false;
+    let mut cancel = false;
+    egui::Window::new("Overwrite file?")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!("{} and/or {}", wav_path.display(), mp3_path.display()));
+            ui.label("already exist. Overwrite them?");
+            ui.horizontal(|ui| {
+                if ui.button("Overwrite").clicked() {
+                    overwrite = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if overwrite {
+        start_export(app, file_name);
+        app.export_dialog.confirm_overwrite = None;
+    } else if cancel {
+        app.export_dialog.confirm_overwrite = None;
+    }
+}
+
+/// Renders the mixdown on a background thread and closes the dialog — the
+/// actual export, run either directly (the target didn't already exist)
+/// or after `draw_overwrite_confirm`.
+fn start_export(app: &mut RakunatorApp, file_name: String) {
+    let project = Arc::clone(&app.project);
+    thread::spawn(move || {
+        let snapshot = project.lock().unwrap().clone();
+        export::export_project(&snapshot, &file_name);
+    });
+    app.export_dialog.open = false;
 }

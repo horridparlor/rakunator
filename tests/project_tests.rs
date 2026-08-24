@@ -700,6 +700,7 @@ fn rattle_builds_24_variants_and_joins_them_into_one_clip_after_the_original() {
             initial_pitch_semitones: 0.0,
             final_pitch_semitones: 0.0,
         },
+        repeat_count: 24,
     };
     project.apply_rattle(clip_id, &params);
 
