@@ -1,5 +1,5 @@
 use crate::project::generate::render_waveform_clip;
-use crate::project::TrackId;
+use crate::project::{import, TrackId};
 use crate::waveform::Waveform;
 use std::time::Duration;
 
@@ -55,6 +55,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
 
     let mut open = true;
     let mut create = false;
+    let mut import = false;
     let state = &mut app.wave_dialog;
 
     egui::Window::new("Create Wave").open(&mut open).show(ctx, |ui| {
@@ -66,8 +67,14 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 }
             });
 
-        ui.add(egui::Slider::new(&mut state.frequency_hz, 20.0..=2000.0).text("Frequency (Hz)"));
-        ui.add(egui::Slider::new(&mut state.duration_secs, 0.1..=10.0).text("Duration (s)"));
+        slider_with_scroll(
+            ui,
+            &mut state.frequency_hz,
+            20.0..=2000.0,
+            10.0,
+            "Frequency (Hz)",
+        );
+        slider_with_scroll(ui, &mut state.duration_secs, 0.1..=10.0, 0.1, "Duration (s)");
 
         let target_name = state
             .target_track
@@ -87,9 +94,16 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 }
             });
 
-        if ui.button("Create").clicked() {
-            create = true;
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Create").clicked() {
+                create = true;
+            }
+            ui.separator();
+            if ui.button("Import audio file...").clicked() {
+                import = true;
+            }
+        });
+        ui.label("(Only .wav import is supported for now.)");
     });
 
     app.wave_dialog.open = open;
@@ -111,5 +125,44 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             project.add_clip(target, name, 0, samples);
         }
         app.wave_dialog.open = false;
+    }
+
+    if import {
+        let target_track = app.wave_dialog.target_track;
+        if let Some(target) = target_track
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("WAV audio", &["wav"])
+                .pick_file()
+        {
+            let mut project = app.project.lock().unwrap();
+            if let Some((samples, channels)) = import::load_wav(&path, project.sample_rate_hz) {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Imported")
+                    .to_string();
+                project.add_clip_channels(target, name, 0, samples, channels);
+            }
+        }
+        app.wave_dialog.open = false;
+    }
+}
+
+/// A slider that can also be adjusted by scrolling the mouse wheel while
+/// hovering over it, in `step` increments per wheel notch.
+fn slider_with_scroll(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    label: &str,
+) {
+    let response = ui.add(egui::Slider::new(value, range.clone()).text(label));
+    if response.hovered() {
+        let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            let delta = if scroll > 0.0 { step } else { -step };
+            *value = (*value + delta).clamp(*range.start(), *range.end());
+        }
     }
 }

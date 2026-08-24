@@ -8,11 +8,11 @@ use config::ExportDir;
 use std::path::PathBuf;
 
 /// Renders the full multi-track mixdown (respecting each track's volume,
-/// pan, mute and solo) and writes it to `<export dir>/mixdown.wav` and
+/// pan, mute and solo) and writes it to `<export dir>/<base_name>.wav` and
 /// `.mp3`. Uses the same `mix::mix_frame` the realtime engine uses for
 /// playback, so what you hear during playback and what gets exported can't
 /// drift apart.
-pub fn export_project(project: &Project) {
+pub fn export_project(project: &Project, base_name: &str) {
     let sample_count = project
         .tracks
         .iter()
@@ -28,15 +28,32 @@ pub fn export_project(project: &Project) {
         interleaved.push(right);
     }
 
+    let base_name = sanitize_file_name(base_name);
     let export_dir = resolve_export_dir();
-    let wav_path = export_dir.join("mixdown.wav");
-    let mp3_path = export_dir.join("mixdown.mp3");
+    let wav_path = export_dir.join(format!("{base_name}.wav"));
+    let mp3_path = export_dir.join(format!("{base_name}.mp3"));
 
     wav::write_wav(&wav_path, &interleaved);
     mp3::write_mp3(&mp3_path, &interleaved);
 
     println!("wrote {}", wav_path.display());
     println!("wrote {}", mp3_path.display());
+}
+
+/// Strips path separators (and trims whitespace) from a user-typed export
+/// name, so it can't accidentally write outside the export directory; falls
+/// back to "mixdown" if that leaves nothing.
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\'))
+        .collect();
+    if cleaned.is_empty() {
+        "mixdown".to_string()
+    } else {
+        cleaned
+    }
 }
 
 fn resolve_export_dir() -> PathBuf {
