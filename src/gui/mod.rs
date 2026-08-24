@@ -4,6 +4,7 @@ mod help_dialog;
 mod meter_widget;
 mod project_file_dialog;
 mod record_monitor;
+mod settings_persistence;
 mod timeline;
 mod toolbar;
 mod track_view;

@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use super::{
     export_dialog, export_dialog::ExportDialogState, help_dialog, project_file_dialog,
-    project_file_dialog::ProjectFileDialogState, record_monitor, timeline, timeline::TimelineState,
-    toolbar, toolbar::EffectsState, track_view, wave_dialog, wave_dialog::WaveDialogState,
-    HEADER_WIDTH, ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP, TRACK_ROW_STEP,
+    project_file_dialog::ProjectFileDialogState, record_monitor, settings_persistence, timeline,
+    timeline::TimelineState, toolbar, toolbar::EffectsState, track_view, wave_dialog,
+    wave_dialog::WaveDialogState, HEADER_WIDTH, ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP,
+    TRACK_ROW_STEP,
 };
 
 pub struct RakunatorApp {
@@ -72,7 +73,7 @@ impl RakunatorApp {
             export_dialog: ExportDialogState::default(),
             project_file_dialog: ProjectFileDialogState::default(),
             timeline: TimelineState::default(),
-            effects: EffectsState::default(),
+            effects: settings_persistence::load_effects_settings(),
             help_open: false,
             help_search: String::new(),
             play_start_position: None,

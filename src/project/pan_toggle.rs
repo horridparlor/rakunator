@@ -1,11 +1,22 @@
 use super::db_to_gain;
+use serde::{Deserialize, Serialize};
 
 /// Which physical channel gets the fade-in vs the fade-out in `apply` — see
-/// `PanToggleParams`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// `PanToggleParams`. Derives `Serialize`/`Deserialize` directly (rather
+/// than a separate on-disk shadow type, as `persistence` uses for
+/// `Project`) since it's a plain two-variant enum with no invariants to
+/// keep off of disk — it's persisted as part of the GUI's app-level
+/// Effects settings (see `gui::settings_persistence`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum PanToggleDirection {
     Left,
     Right,
+}
+
+impl Default for PanToggleDirection {
+    fn default() -> Self {
+        PanToggleDirection::Left
+    }
 }
 
 /// Settings for the Pan Toggle effect (`Project::apply_pan_toggle`): a

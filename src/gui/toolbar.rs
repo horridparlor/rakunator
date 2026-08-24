@@ -4,8 +4,9 @@ use crate::project::reverb::ReverbParams;
 use crate::project::stretch::RampParams;
 use crate::project::trip_toggler::TripTogglerParams;
 use crate::project::{db_to_gain, ClipId, PanToggleDirection, PanToggleParams, RattleParams, TrackId};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LastEffect {
     PitchUp,
     PitchDown,
@@ -20,6 +21,15 @@ pub enum LastEffect {
 /// used most recently, for the Ctrl+R "repeat last effect" shortcut. Fade
 /// in/out have their own dedicated shortcuts, so they're never recorded
 /// here.
+///
+/// Persisted as an app-level settings file (see `settings_persistence`) —
+/// every field down to `last_effect` is meaningful to save; the `editing_*`
+/// fields and `settings_open` below are just the "Edit steps..." dialog's
+/// in-progress scratch state, so they're `#[serde(skip)]`: on load they get
+/// the plain `f32`/`bool` default (0.0/false), which is fine since they're
+/// always overwritten from the committed fields the moment that dialog is
+/// opened, never read before then.
+#[derive(Serialize, Deserialize)]
 pub struct EffectsState {
     pub pitch_up_step: f32,
     pub pitch_down_step: f32,
@@ -97,63 +107,119 @@ pub struct EffectsState {
     pub tt_fade_curve_adjust: f32,
     pub tt_start_high: bool,
 
+    #[serde(skip)]
     settings_open: bool,
+    #[serde(skip)]
     editing_pitch_up: f32,
+    #[serde(skip)]
     editing_pitch_down: f32,
+    #[serde(skip)]
     editing_volume_up: f32,
+    #[serde(skip)]
     editing_volume_down: f32,
+    #[serde(skip)]
     editing_fade_in_a: f32,
+    #[serde(skip)]
     editing_fade_in_b: f32,
+    #[serde(skip)]
     editing_fade_out_a: f32,
+    #[serde(skip)]
     editing_fade_out_b: f32,
+    #[serde(skip)]
     editing_fade_toggle_starts_with_in: bool,
+    #[serde(skip)]
     editing_tempo_up: f32,
+    #[serde(skip)]
     editing_tempo_down: f32,
+    #[serde(skip)]
     editing_reverb_room_size: f32,
+    #[serde(skip)]
     editing_reverb_reverberance: f32,
+    #[serde(skip)]
     editing_reverb_hf_damping: f32,
+    #[serde(skip)]
     editing_reverb_tone_low: f32,
+    #[serde(skip)]
     editing_reverb_tone_high: f32,
+    #[serde(skip)]
     editing_reverb_wet_gain_db: f32,
+    #[serde(skip)]
     editing_reverb_dry_gain_db: f32,
+    #[serde(skip)]
     editing_reverb_stereo_width: f32,
+    #[serde(skip)]
     editing_reverb_pre_delay_ms: f32,
+    #[serde(skip)]
     editing_reverb_wet_only: bool,
+    #[serde(skip)]
     editing_echo_delay_seconds: f32,
+    #[serde(skip)]
     editing_echo_decay: f32,
+    #[serde(skip)]
     editing_distortion_drive_db: f32,
+    #[serde(skip)]
     editing_distortion_threshold: f32,
+    #[serde(skip)]
     editing_stretch_initial_tempo_percent: f32,
+    #[serde(skip)]
     editing_stretch_final_tempo_percent: f32,
+    #[serde(skip)]
     editing_stretch_initial_pitch_semitones: f32,
+    #[serde(skip)]
     editing_stretch_final_pitch_semitones: f32,
+    #[serde(skip)]
     editing_rattle_pitch_up_semitones: f32,
+    #[serde(skip)]
     editing_rattle_pitch_down_semitones: f32,
+    #[serde(skip)]
     editing_rattle_tempo_x_percent: f32,
+    #[serde(skip)]
     editing_rattle_tempo_y_percent: f32,
+    #[serde(skip)]
     editing_rattle_fade_in_a_db: f32,
+    #[serde(skip)]
     editing_rattle_fade_in_b_db: f32,
+    #[serde(skip)]
     editing_rattle_stretch_initial_tempo_percent: f32,
+    #[serde(skip)]
     editing_rattle_stretch_final_tempo_percent: f32,
+    #[serde(skip)]
     editing_rattle_stretch_initial_pitch_semitones: f32,
+    #[serde(skip)]
     editing_rattle_stretch_final_pitch_semitones: f32,
 
+    #[serde(skip)]
     editing_pan_toggle_high_db: f32,
+    #[serde(skip)]
     editing_pan_toggle_low_db: f32,
+    #[serde(skip)]
     editing_pan_toggle_direction: PanToggleDirection,
 
+    #[serde(skip)]
     editing_tt_high_db: f32,
+    #[serde(skip)]
     editing_tt_low_db: f32,
+    #[serde(skip)]
     editing_tt_super_mode: bool,
+    #[serde(skip)]
     editing_tt_detail: f32,
+    #[serde(skip)]
     editing_tt_instant_shift: bool,
+    #[serde(skip)]
     editing_tt_instant_high_gain_db: f32,
+    #[serde(skip)]
     editing_tt_instant_low_gain_db: f32,
+    #[serde(skip)]
     editing_tt_instant_high_fade_start_db: f32,
+    #[serde(skip)]
     editing_tt_instant_high_fade_end_db: f32,
+    #[serde(skip)]
     editing_tt_instant_low_fade_start_db: f32,
+    #[serde(skip)]
     editing_tt_instant_low_fade_end_db: f32,
+    #[serde(skip)]
     editing_tt_fade_curve_adjust: f32,
+    #[serde(skip)]
     editing_tt_start_high: bool,
 }
 
@@ -1188,6 +1254,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         app.effects.tt_fade_curve_adjust = app.effects.editing_tt_fade_curve_adjust;
         app.effects.tt_start_high = app.effects.editing_tt_start_high;
         app.effects.settings_open = false;
+        super::settings_persistence::save_effects_settings(&app.effects);
     } else if cancel || !open {
         app.effects.settings_open = false;
     }
