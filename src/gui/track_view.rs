@@ -191,14 +191,36 @@ pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, 
     }
 
     if background_response.clicked() {
-        let shift = ui.ctx().input(|i| i.modifiers.shift);
+        let (ctrl, shift) = ui.ctx().input(|i| (i.modifiers.command, i.modifiers.shift));
         if shift {
+            // Range-select from the anchor (the last plain- or Ctrl-clicked
+            // track) through this one, inclusive — replacing whatever was
+            // selected, same as a file manager's Shift+click. Falls back to
+            // a plain single-track select if there's no anchor yet (e.g.
+            // the very first click was itself a Shift+click).
+            let anchor_index = project
+                .track_selection_anchor
+                .and_then(|anchor| project.tracks.iter().position(|t| t.id == anchor));
+            match anchor_index {
+                Some(anchor_index) => {
+                    let (lo, hi) = (anchor_index.min(track_index), anchor_index.max(track_index));
+                    project.selected_tracks = project.tracks[lo..=hi].iter().map(|t| t.id).collect();
+                }
+                None => {
+                    project.selected_tracks.clear();
+                    project.selected_tracks.insert(track_id);
+                    project.track_selection_anchor = Some(track_id);
+                }
+            }
+        } else if ctrl {
             if !project.selected_tracks.remove(&track_id) {
                 project.selected_tracks.insert(track_id);
             }
+            project.track_selection_anchor = Some(track_id);
         } else {
             project.selected_tracks.clear();
             project.selected_tracks.insert(track_id);
+            project.track_selection_anchor = Some(track_id);
         }
         project.selection.clear();
     }

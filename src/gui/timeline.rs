@@ -432,6 +432,14 @@ pub fn draw_lane(
     let (rect, lane_response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     state.lane_left_x = Some(rect.left());
 
+    // A clip that started scrolled off-screen to the left (its start_sample
+    // behind the current scroll position) computes a rect starting well to
+    // the left of `rect` — without this, its fill/waveform/label would
+    // paint straight over the track header to the left (and clicks on it
+    // would leak into the header's controls too, since egui's hit-testing
+    // clips to this same rect).
+    ui.set_clip_rect(ui.clip_rect().intersect(rect));
+
     ui.painter()
         .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
@@ -662,6 +670,7 @@ pub fn draw_lane(
         draw_clip_rect(
             ui,
             clip_rect,
+            rect,
             &clip.name,
             &clip.samples,
             clip.channels,
@@ -792,6 +801,7 @@ pub fn draw_lane(
 fn draw_clip_rect(
     ui: &egui::Ui,
     rect: Rect,
+    lane_rect: Rect,
     name: &str,
     samples: &[f32],
     channels: u8,
@@ -847,8 +857,14 @@ fn draw_clip_rect(
         Stroke::new(1.0, stroke_color),
         StrokeKind::Middle,
     );
+    // Pinned to the visible left edge of the lane (Audacity-style) rather
+    // than the clip's actual start, so a clip's name stays readable while
+    // scrolled into view even if its start has scrolled off-screen —
+    // clamped to the clip's own rect so the label never drifts past its
+    // own clip into a neighboring one.
+    let label_left = rect.left().max(lane_rect.left()).min(rect.right());
     painter.text(
-        rect.left_top() + Vec2::new(4.0, 2.0),
+        egui::pos2(label_left, rect.top()) + Vec2::new(4.0, 2.0),
         egui::Align2::LEFT_TOP,
         name,
         egui::FontId::default(),

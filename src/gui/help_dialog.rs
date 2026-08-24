@@ -230,6 +230,10 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Invert", "Multiplies every sample by -1 (phase invert)"),
                 ("Reverse", "Reverses the clip's audio in time"),
                 ("Swap Channels", "Swaps left/right on a stereo clip; no effect on mono clips"),
+                (
+                    "Pan Toggle",
+                    "Splits a stereo clip's left/right channels apart, ramps one side from a configurable Low dB up to a High dB (fading in) and the other from High down to Low (fading out) across the clip, then recombines them; which side fades in is a configurable direction (Left/Right), and the dB points are its own values in Edit steps... (default +6/-4). No effect on mono clips.",
+                ),
             ],
         },
         HelpSection {

@@ -3,7 +3,7 @@ use super::RakunatorApp;
 use crate::project::reverb::ReverbParams;
 use crate::project::stretch::RampParams;
 use crate::project::trip_toggler::TripTogglerParams;
-use crate::project::{db_to_gain, ClipId, RattleParams, TrackId};
+use crate::project::{db_to_gain, ClipId, PanToggleDirection, PanToggleParams, RattleParams, TrackId};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum LastEffect {
@@ -76,6 +76,13 @@ pub struct EffectsState {
     pub rattle_stretch_initial_pitch_semitones: f32,
     pub rattle_stretch_final_pitch_semitones: f32,
 
+    /// Pan Toggle's own high/low dB endpoints (the fade-in side ramps
+    /// low -> high, the fade-out side high -> low) and which physical
+    /// channel gets the fade-in.
+    pub pan_toggle_high_db: f32,
+    pub pan_toggle_low_db: f32,
+    pub pan_toggle_direction: PanToggleDirection,
+
     pub tt_high_db: f32,
     pub tt_low_db: f32,
     pub tt_super_mode: bool,
@@ -130,6 +137,10 @@ pub struct EffectsState {
     editing_rattle_stretch_final_tempo_percent: f32,
     editing_rattle_stretch_initial_pitch_semitones: f32,
     editing_rattle_stretch_final_pitch_semitones: f32,
+
+    editing_pan_toggle_high_db: f32,
+    editing_pan_toggle_low_db: f32,
+    editing_pan_toggle_direction: PanToggleDirection,
 
     editing_tt_high_db: f32,
     editing_tt_low_db: f32,
@@ -196,6 +207,10 @@ impl Default for EffectsState {
             rattle_stretch_initial_pitch_semitones: 0.0,
             rattle_stretch_final_pitch_semitones: 0.0,
 
+            pan_toggle_high_db: 6.0,
+            pan_toggle_low_db: -4.0,
+            pan_toggle_direction: PanToggleDirection::Left,
+
             tt_high_db: 4.0,
             tt_low_db: -4.0,
             tt_super_mode: false,
@@ -250,6 +265,10 @@ impl Default for EffectsState {
             editing_rattle_stretch_final_tempo_percent: 0.0,
             editing_rattle_stretch_initial_pitch_semitones: 0.0,
             editing_rattle_stretch_final_pitch_semitones: 0.0,
+
+            editing_pan_toggle_high_db: 6.0,
+            editing_pan_toggle_low_db: -4.0,
+            editing_pan_toggle_direction: PanToggleDirection::Left,
 
             editing_tt_high_db: 4.0,
             editing_tt_low_db: -4.0,
@@ -627,6 +646,20 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
         }
         ui.separator();
         if ui
+            .add_enabled(enabled, egui::Button::new("Pan Toggle"))
+            .on_hover_text(
+                "Splits a stereo clip into its left/right channels, ramps one side up and the \
+                 other down (own high/low dB points and fade direction, in \"Edit steps...\"), \
+                 then recombines them; no effect on mono clips.",
+            )
+            .clicked()
+        {
+            let params = pan_toggle_params(&app.effects);
+            apply_to_targets(app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
+            ui.close();
+        }
+        ui.separator();
+        if ui
             .add_enabled(enabled, egui::Button::new("Rattle"))
             .on_hover_text(
                 "Builds pitch/tempo-shifted \"up\" and \"down\" copies of the clip, repeats the \
@@ -705,6 +738,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                 app.effects.rattle_stretch_initial_pitch_semitones;
             app.effects.editing_rattle_stretch_final_pitch_semitones =
                 app.effects.rattle_stretch_final_pitch_semitones;
+            app.effects.editing_pan_toggle_high_db = app.effects.pan_toggle_high_db;
+            app.effects.editing_pan_toggle_low_db = app.effects.pan_toggle_low_db;
+            app.effects.editing_pan_toggle_direction = app.effects.pan_toggle_direction;
             app.effects.editing_tt_high_db = app.effects.tt_high_db;
             app.effects.editing_tt_low_db = app.effects.tt_low_db;
             app.effects.editing_tt_super_mode = app.effects.tt_super_mode;
@@ -771,6 +807,16 @@ fn rattle_params(effects: &EffectsState) -> RattleParams {
             initial_pitch_semitones: effects.rattle_stretch_initial_pitch_semitones,
             final_pitch_semitones: effects.rattle_stretch_final_pitch_semitones,
         },
+    }
+}
+
+/// Builds a `PanToggleParams` from the current (committed) Pan Toggle
+/// settings in `EffectsState`.
+fn pan_toggle_params(effects: &EffectsState) -> PanToggleParams {
+    PanToggleParams {
+        high_db: effects.pan_toggle_high_db,
+        low_db: effects.pan_toggle_low_db,
+        direction: effects.pan_toggle_direction,
     }
 }
 
@@ -1006,6 +1052,22 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         });
 
         ui.add_space(8.0);
+        ui.label("Pan Toggle: splits a stereo clip's channels, fades one up and the other down.");
+        ui.horizontal(|ui| {
+            ui.label("Fade-in side:");
+            ui.radio_value(&mut app.effects.editing_pan_toggle_direction, PanToggleDirection::Left, "Left");
+            ui.radio_value(&mut app.effects.editing_pan_toggle_direction, PanToggleDirection::Right, "Right");
+        });
+        egui::Grid::new("pan_toggle_grid").num_columns(2).show(ui, |ui| {
+            ui.label("High dB (fade-in end / fade-out start):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_pan_toggle_high_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Low dB (fade-in start / fade-out end):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_pan_toggle_low_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
         ui.label("Trip Toggler: finds clear low points and alternates a fade down/up across the segments.");
         ui.horizontal(|ui| {
             ui.label("Detection mode:");
@@ -1109,6 +1171,9 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             app.effects.editing_rattle_stretch_initial_pitch_semitones;
         app.effects.rattle_stretch_final_pitch_semitones =
             app.effects.editing_rattle_stretch_final_pitch_semitones;
+        app.effects.pan_toggle_high_db = app.effects.editing_pan_toggle_high_db;
+        app.effects.pan_toggle_low_db = app.effects.editing_pan_toggle_low_db;
+        app.effects.pan_toggle_direction = app.effects.editing_pan_toggle_direction;
         app.effects.tt_high_db = app.effects.editing_tt_high_db;
         app.effects.tt_low_db = app.effects.editing_tt_low_db;
         app.effects.tt_super_mode = app.effects.editing_tt_super_mode;

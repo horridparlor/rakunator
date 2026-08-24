@@ -4,6 +4,7 @@ pub mod eq;
 pub mod generate;
 pub mod import;
 pub mod noise_reduction;
+pub mod pan_toggle;
 pub mod persistence;
 pub mod reverb;
 pub mod stretch;
@@ -11,6 +12,7 @@ pub mod track;
 pub mod trip_toggler;
 
 pub use clip::{Clip, ClipId};
+pub use pan_toggle::{PanToggleDirection, PanToggleParams};
 pub use track::{Track, TrackId};
 
 use std::collections::{HashMap, HashSet};
@@ -97,10 +99,15 @@ pub struct Project {
     /// replaces it with just that clip).
     pub selection: HashSet<ClipId>,
     /// Set by clicking a track header's background (outside its
-    /// controls; Shift+click adds/removes a track); the Effects menu
-    /// applies to every clip on every selected track when this is
-    /// non-empty, taking priority over `selection`.
+    /// controls; Ctrl+click toggles a track, Shift+click range-selects);
+    /// the Effects menu applies to every clip on every selected track when
+    /// this is non-empty, taking priority over `selection`.
     pub selected_tracks: HashSet<TrackId>,
+    /// The last plain- or Ctrl-clicked track header, i.e. the fixed end of
+    /// a Shift+click range-select — not itself part of the persisted
+    /// project state, just ephemeral UI interaction state kept alongside
+    /// `selected_tracks`.
+    pub track_selection_anchor: Option<TrackId>,
     clipboard: Vec<ClipboardEntry>,
     undo_stack: Vec<ProjectSnapshot>,
     redo_stack: Vec<ProjectSnapshot>,
@@ -118,6 +125,7 @@ impl Clone for Project {
             next_clip_id: self.next_clip_id,
             selection: self.selection.clone(),
             selected_tracks: self.selected_tracks.clone(),
+            track_selection_anchor: self.track_selection_anchor,
             clipboard: self.clipboard.clone(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -190,6 +198,7 @@ impl Project {
             next_clip_id: 0,
             selection: HashSet::new(),
             selected_tracks: HashSet::new(),
+            track_selection_anchor: None,
             clipboard: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -1103,6 +1112,38 @@ impl Project {
             samples,
             channels as u8,
         );
+    }
+
+    /// Splits a stereo clip apart into its left/right channels, ramps one
+    /// side's gain up (fading in) and the other down (fading out) linearly
+    /// across the clip's duration, then recombines them back into the
+    /// stereo output — see the `pan_toggle` module. A no-op on mono clips.
+    /// Destructive: bakes the clip's current trim state into a fresh
+    /// buffer.
+    pub fn apply_pan_toggle(&mut self, clip_id: ClipId, params: &pan_toggle::PanToggleParams) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let Some(track) = self.track(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter().find(|c| c.id == clip_id) else {
+            return;
+        };
+        if clip.channels() != 2 {
+            return;
+        }
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let mut samples = clip.visible_samples().to_vec();
+        pan_toggle::apply(&mut samples, channels as usize, params);
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
     }
 
     /// A port of "trip-toggler.py": finds clear low points in the clip and
