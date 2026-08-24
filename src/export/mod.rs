@@ -2,24 +2,38 @@ mod config;
 mod mp3;
 mod wav;
 
-use crate::waveform::Waveform;
-use config::{ExportDir, SAMPLE_RATE_HZ};
+use crate::audio_engine::mix;
+use crate::project::Project;
+use config::ExportDir;
 use std::path::PathBuf;
-use std::time::Duration;
 
-/// Renders `waveform` at `frequency_hz` for `duration` at the export sample
-/// rate, then writes it to `<config::EXPORT_DIR>/<waveform-name>.wav` and `.mp3`.
-pub fn export_wave(waveform: Waveform, frequency_hz: f32, duration: Duration) {
-    let samples = render_samples(waveform, frequency_hz, duration);
+/// Renders the full multi-track mixdown (respecting each track's volume,
+/// pan, mute and solo) and writes it to `<export dir>/mixdown.wav` and
+/// `.mp3`. Uses the same `mix::mix_frame` the realtime engine uses for
+/// playback, so what you hear during playback and what gets exported can't
+/// drift apart.
+pub fn export_project(project: &Project) {
+    let sample_count = project
+        .tracks
+        .iter()
+        .flat_map(|t| &t.clips)
+        .map(|c| c.end_sample())
+        .max()
+        .unwrap_or(0);
+
+    let mut interleaved = Vec::with_capacity(sample_count as usize * 2);
+    for n in 0..sample_count {
+        let (left, right) = mix::mix_frame(&project.tracks, n);
+        interleaved.push(left);
+        interleaved.push(right);
+    }
 
     let export_dir = resolve_export_dir();
-    let base_name = waveform.name();
+    let wav_path = export_dir.join("mixdown.wav");
+    let mp3_path = export_dir.join("mixdown.mp3");
 
-    let wav_path = export_dir.join(format!("{base_name}.wav"));
-    let mp3_path = export_dir.join(format!("{base_name}.mp3"));
-
-    wav::write_wav(&wav_path, &samples);
-    mp3::write_mp3(&mp3_path, &samples);
+    wav::write_wav(&wav_path, &interleaved);
+    mp3::write_mp3(&mp3_path, &interleaved);
 
     println!("wrote {}", wav_path.display());
     println!("wrote {}", mp3_path.display());
@@ -32,17 +46,4 @@ fn resolve_export_dir() -> PathBuf {
         }
         ExportDir::Path(path) => PathBuf::from(path),
     }
-}
-
-fn render_samples(waveform: Waveform, frequency_hz: f32, duration: Duration) -> Vec<f32> {
-    let sample_count = (duration.as_secs_f32() * SAMPLE_RATE_HZ as f32).round() as usize;
-    let phase_step = frequency_hz / SAMPLE_RATE_HZ as f32;
-
-    let mut phase = 0f32;
-    let mut samples = Vec::with_capacity(sample_count);
-    for _ in 0..sample_count {
-        samples.push(waveform.sample(phase));
-        phase = (phase + phase_step) % 1.0;
-    }
-    samples
 }

@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 cpal = "0.18.2"
 dirs = "6.0.0"
+eframe = "0.36.1"
+egui = "0.36.1"
 hound = "3.5.1"
 mp3lame-encoder = "0.2.5"
 ringbuf = "0.5.1"

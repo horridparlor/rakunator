@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 /// Shared waveform shapes so playback (realtime) and export (offline
 /// rendering) generate identical samples from a single source of truth.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Waveform {
     Sine,
     Square,
