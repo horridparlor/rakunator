@@ -216,7 +216,7 @@ fn help_sections() -> &'static [HelpSection] {
                 ),
                 (
                     "Rattle",
-                    "Builds pitch/tempo-shifted \"up\" and \"down\" copies of the clip, repeats the pair 12 times back-to-back, joins them into one clip placed right after the original, then applies its own Adjustable Fade In and its own Sliding Stretch — all values configurable in Edit steps..., separate from those effects' regular settings",
+                    "Builds pitch/tempo-shifted \"up\" and \"down\" copies of the clip, repeats the pair back-to-back (Repeat Count) into one clip placed right after the original, then applies its own Adjustable Fade In and its own Sliding Stretch — all values configurable in Edit steps..., separate from those effects' regular settings",
                 ),
                 (
                     "Trip Toggler",

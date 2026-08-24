@@ -731,13 +731,13 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             apply_to_targets(app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
             ui.close();
         }
-        ui.separator();
         if ui
             .add_enabled(enabled, egui::Button::new("Rattle"))
             .on_hover_text(
                 "Builds pitch/tempo-shifted \"up\" and \"down\" copies of the clip, repeats the \
-                 pair 12 times back-to-back, joins them, then applies its own Adjustable Fade \
-                 In and Sliding Stretch (own settings below, in \"Edit steps...\").",
+                 pair back-to-back (Repeat Count, in \"Edit steps...\"), joins them, then applies \
+                 its own Adjustable Fade In and Sliding Stretch (own settings below, in \"Edit \
+                 steps...\").",
             )
             .clicked()
         {
