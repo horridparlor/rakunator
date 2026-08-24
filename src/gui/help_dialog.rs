@@ -19,7 +19,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 row(ui, "Space", "Play/Pause — pausing jumps back to where playback started");
                 row(ui, "Click the ruler / a track lane", "Seek the playhead there");
                 row(ui, "Zoom In / Zoom Out (toolbar)", "Zoom the timeline");
-                row(ui, "Ctrl+Scroll on the timeline", "Zoom in/out (may be intercepted by some window managers — use the buttons if so)");
+                row(ui, "Ctrl+Scroll / Alt+Scroll on the timeline", "Zoom in/out (if one is grabbed by your window manager or remote-desktop client, try the other, or use the buttons)");
                 row(ui, "Shift+Scroll on the ruler", "Pan horizontally");
                 row(ui, "Horizontal scroll (trackpad swipe / tilt-wheel) on the ruler or a track", "Pan horizontally, no modifier needed");
                 row(ui, "Shift+Scroll on a track", "Zoom that track's waveform vertically, to see quiet detail (visual only)");

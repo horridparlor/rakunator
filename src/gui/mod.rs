@@ -34,8 +34,14 @@ pub(crate) fn wheel_notches(ui: &egui::Ui) -> f32 {
     })
 }
 
-/// Height of one track's header + timeline lane row.
-pub(crate) const ROW_HEIGHT: f32 = 72.0;
+/// Height of one track's header + timeline lane row. Must be tall enough to
+/// fit the header's content (name/menu, Pan, Vol, Mute/Solo+meter rows) —
+/// otherwise the header silently overflows past this height (egui grows the
+/// row to fit it), while every row-index calculation elsewhere (dragging a
+/// clip onto another track, marquee-select, the snap indicator) keeps
+/// assuming rows are exactly `TRACK_ROW_STEP` apart, drifting further off
+/// with each track and making a barely-moved drag jump to the wrong track.
+pub(crate) const ROW_HEIGHT: f32 = 84.0;
 /// Fixed width of the track header column, so every lane's left edge lines
 /// up regardless of row content.
 pub(crate) const HEADER_WIDTH: f32 = 220.0;

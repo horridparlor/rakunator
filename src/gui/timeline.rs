@@ -334,24 +334,31 @@ fn snap_move_start_with_indicator(
     (new_start, None)
 }
 
-/// Ctrl+scroll zooms the timeline (keeping the sample under the pointer
-/// fixed). Over the ruler, Shift+scroll pans it horizontally as well
-/// (`allow_shift_pan`); over a track lane it's left alone instead so
-/// `handle_vertical_zoom` can use Shift+scroll for that track's waveform
-/// zoom. Consumes the scroll delta so the enclosing vertical `ScrollArea`
-/// doesn't also react to the same wheel event.
+/// Ctrl+scroll (or Alt+scroll, in case Ctrl+scroll is grabbed by the window
+/// manager/remote-desktop client first) zooms the timeline, keeping the
+/// sample under the pointer fixed. Over the ruler, Shift+scroll pans it
+/// horizontally as well (`allow_shift_pan`); over a track lane it's left
+/// alone instead so `handle_vertical_zoom` can use Shift+scroll for that
+/// track's waveform zoom. Consumes the scroll delta so the enclosing
+/// vertical `ScrollArea` doesn't also react to the same wheel event.
 fn handle_zoom_and_pan(ui: &egui::Ui, hovered: bool, rect: Rect, state: &mut TimelineState, allow_shift_pan: bool) {
     if !hovered {
         return;
     }
-    let (scroll_x, scroll_y, ctrl, shift) = ui.ctx().input(|i| {
+    let (scroll_x, scroll_y, ctrl, alt, shift) = ui.ctx().input(|i| {
         (
             i.smooth_scroll_delta.x,
             i.smooth_scroll_delta.y,
             i.modifiers.command,
+            i.modifiers.alt,
             i.modifiers.shift,
         )
     });
+    // Alt+Scroll is a second way to trigger the same zoom as Ctrl+Scroll —
+    // some window managers/remote-desktop clients grab Ctrl+Scroll for
+    // their own zoom before it ever reaches the app, so this gives
+    // everyone a combo that's actually reachable.
+    let ctrl = ctrl || alt;
 
     // A genuine horizontal scroll gesture (trackpad two-finger swipe, a
     // mouse's tilt-wheel) always pans the timeline, no modifier needed —
