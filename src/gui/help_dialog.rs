@@ -26,10 +26,10 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 section(ui, "Recording");
                 row(
                     ui,
-                    "\u{25cf} (toolbar, next to Play)",
-                    "Capture the default microphone onto a new track; click it again to stop (hover it to see elapsed time)",
+                    "\u{25cf} (toolbar, next to Play) / \"R\"",
+                    "Capture the default microphone onto a new track, from wherever the playhead is; click it again, or press R or Space, to stop (hover it to see elapsed time)",
                 );
-                row(ui, "While recording", "The rest of the UI is locked until you stop");
+                row(ui, "While recording", "Playback runs so you can hear/see existing tracks as you record; the rest of the UI is locked until you stop");
 
                 section(ui, "Selecting clips & tracks");
                 row(ui, "Click the top half of a clip", "Select just that clip");

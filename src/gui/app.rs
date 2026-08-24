@@ -180,6 +180,7 @@ fn modern_visuals() -> egui::Visuals {
 
 impl eframe::App for RakunatorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        handle_record_shortcut(ui, self);
         let recording = self.recording.is_some();
 
         if !recording {
@@ -325,6 +326,29 @@ fn draw_row_gap(ui: &mut egui::Ui) {
         rect.center().y,
         egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
     );
+}
+
+/// Plain "R" starts recording; while recording, plain "R" or Space stops it
+/// (Space also doubles as play/pause when not recording, handled below in
+/// `handle_shortcuts`). Runs unconditionally, even while recording, unlike
+/// the rest of the shortcuts which are locked out during a capture.
+fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+    let (r, space) = ui.ctx().input(|i| {
+        (
+            !i.modifiers.any() && i.key_pressed(egui::Key::R),
+            !i.modifiers.any() && i.key_pressed(egui::Key::Space),
+        )
+    });
+    if app.recording.is_some() {
+        if r || space {
+            app.stop_recording();
+        }
+    } else if r {
+        app.start_recording();
+    }
 }
 
 /// How far Left/Right nudge selected clips per key press.
