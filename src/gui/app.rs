@@ -397,6 +397,19 @@ fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
     if app.recording.is_some() {
         if r || space {
             app.stop_recording();
+            // `recording` flips to false for the rest of this frame, so
+            // without this, `handle_shortcuts` would see the same Space (or
+            // plain R) key press right below and immediately toggle
+            // playback back on — consume both so stopping a recording never
+            // also resumes playback in the same frame.
+            ui.ctx().input_mut(|i| {
+                i.events.retain(|e| {
+                    !matches!(
+                        e,
+                        egui::Event::Key { key: egui::Key::R | egui::Key::Space, pressed: true, .. }
+                    )
+                });
+            });
         }
     } else if r {
         app.start_recording();
