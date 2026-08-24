@@ -21,6 +21,9 @@ pub struct RakunatorApp {
     pub(super) timeline: TimelineState,
     pub(super) effects: EffectsState,
     pub(super) help_open: bool,
+    /// Live filter text for the Help window's search box — matched
+    /// case-insensitively against each row's action/description.
+    pub(super) help_search: String,
     /// Where playback was sitting when it was last started; pausing jumps
     /// back here, so tapping Space previews repeatedly from the same spot.
     pub(super) play_start_position: Option<u64>,
@@ -71,6 +74,7 @@ impl RakunatorApp {
             timeline: TimelineState::default(),
             effects: EffectsState::default(),
             help_open: false,
+            help_search: String::new(),
             play_start_position: None,
             project_name: None,
             recording: None,
@@ -479,6 +483,12 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
             i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
         )
     });
+
+    let toggle_fullscreen = ui.ctx().input(|i| i.key_pressed(egui::Key::F11));
+    if toggle_fullscreen {
+        let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+    }
 
     if undo {
         app.project.lock().unwrap().undo();

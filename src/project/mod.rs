@@ -1,8 +1,14 @@
 pub mod clip;
+pub mod dynamics;
+pub mod eq;
 pub mod generate;
 pub mod import;
+pub mod noise_reduction;
 pub mod persistence;
+pub mod reverb;
+pub mod stretch;
 pub mod track;
+pub mod trip_toggler;
 
 pub use clip::{Clip, ClipId};
 pub use track::{Track, TrackId};
@@ -13,6 +19,31 @@ use std::collections::{HashMap, HashSet};
 /// the Effects menu's adjustable fade start/end points.
 pub fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
+}
+
+/// The classic "tape speed" pitch shift: resampling `source` (interleaved,
+/// `channels` channels) by a factor of `2^(semitones/12)` changes both its
+/// pitch and its playback duration together. A true pitch-preserving shift
+/// would need a phase vocoder or similar time-stretching algorithm (see
+/// `stretch::apply_time_pitch_ramp`, used by the Tempo/Sliding
+/// Stretch/Rattle effects instead).
+fn resample_for_pitch(source: &[f32], channels: usize, semitones: f32) -> Vec<f32> {
+    let frames = source.len() / channels;
+    let ratio = 2f32.powf(semitones / 12.0);
+    let new_frames = ((frames as f32) / ratio).round().max(1.0) as usize;
+    let mut resampled = vec![0.0f32; new_frames * channels];
+    let frame_sample = |frame: usize, ch: usize| -> f32 { source.get(frame * channels + ch).copied().unwrap_or(0.0) };
+    for ch in 0..channels {
+        for i in 0..new_frames {
+            let src_pos = i as f32 * ratio;
+            let idx = src_pos.floor() as usize;
+            let frac = src_pos - idx as f32;
+            let a = frame_sample(idx, ch);
+            let b = frame_sample(idx + 1, ch);
+            resampled[i * channels + ch] = a + (b - a) * frac;
+        }
+    }
+    resampled
 }
 
 /// Converts interleaved `samples` (`from` channels) to `to` channels: mono
@@ -90,6 +121,42 @@ impl Clone for Project {
             clipboard: self.clipboard.clone(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+        }
+    }
+}
+
+/// Settings for the Rattle effect — its own Adjustable Fade In and Sliding
+/// Stretch values, independent of those effects' regular Effects-menu
+/// settings (see `Project::apply_rattle`).
+pub struct RattleParams {
+    pub pitch_up_semitones: f32,
+    pub pitch_down_semitones: f32,
+    pub tempo_x_percent: f32,
+    pub tempo_y_percent: f32,
+    pub fade_in_start_gain: f32,
+    pub fade_in_end_gain: f32,
+    pub stretch: stretch::RampParams,
+}
+
+/// Removes each channel's DC offset (subtracts its mean), then scales the
+/// whole (channel-linked) buffer so its peak lands at `peak_target_db`.
+/// Used by `Project::apply_autotune`'s Normalize stage.
+fn normalize_in_place(samples: &mut [f32], channels: usize, peak_target_db: f32) {
+    if channels == 0 || samples.is_empty() {
+        return;
+    }
+    let frames = samples.len() / channels;
+    for ch in 0..channels {
+        let mean: f32 = (0..frames).map(|f| samples[f * channels + ch]).sum::<f32>() / frames as f32;
+        for f in 0..frames {
+            samples[f * channels + ch] -= mean;
+        }
+    }
+    let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    if peak > 1e-9 {
+        let gain = db_to_gain(peak_target_db) / peak;
+        for s in samples.iter_mut() {
+            *s = (*s * gain).clamp(-1.0, 1.0);
         }
     }
 }
@@ -754,6 +821,440 @@ impl Project {
         *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
     }
 
+    /// Cuts -4 dB across ~2 kHz-5 kHz — a "give to speech" dip that tames
+    /// harshness in that presence range. Destructive: bakes the clip's
+    /// current trim state into a fresh buffer.
+    pub fn apply_give_to_speech(&mut self, clip_id: ClipId) {
+        let stage = eq::give_to_speech_stage(self.sample_rate_hz as f32);
+        self.apply_biquad_stages(clip_id, &[stage]);
+    }
+
+    /// Audacity-style "Telephone" bandpass EQ — see `eq::telephone_stages`.
+    /// Destructive: bakes the clip's current trim state into a fresh
+    /// buffer.
+    pub fn apply_telephone(&mut self, clip_id: ClipId) {
+        let stages = eq::telephone_stages(self.sample_rate_hz as f32);
+        self.apply_biquad_stages(clip_id, &stages);
+    }
+
+    /// Runs a clip's (visible) samples through a cascade of biquad EQ
+    /// stages in place. Destructive: bakes the clip's current trim state
+    /// into a fresh buffer.
+    fn apply_biquad_stages(&mut self, clip_id: ClipId, stages: &[eq::Biquad]) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let mut samples = clip.visible_samples().to_vec();
+        eq::apply_cascade(stages, &mut samples, channels as usize);
+        for s in &mut samples {
+            *s = s.clamp(-1.0, 1.0);
+        }
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
+    }
+
+    /// Runs the full Audacity "Autotune" macro chain: blind noise
+    /// reduction, the exported Filter Curve EQ, normalize, compressor,
+    /// limiter, then reverb. See the individual stage modules
+    /// (`noise_reduction`, `eq`, `dynamics`, `reverb`) for how each is
+    /// approximated — Audacity's own internals aren't available to match
+    /// bit-for-bit, so this reproduces the same signal-chain shape and
+    /// parameter values using standard equivalents. Destructive: bakes the
+    /// clip's current trim state into a fresh buffer.
+    pub fn apply_autotune(&mut self, clip_id: ClipId) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let ch = channels as usize;
+        let mut samples = clip.visible_samples().to_vec();
+
+        noise_reduction::reduce_noise(&mut samples, ch);
+
+        let kernel = eq::design_filter_curve_fir(&eq::AUTOTUNE_FILTER_CURVE, 8191, sample_rate);
+        eq::convolve_fir(&kernel, &mut samples, ch);
+
+        normalize_in_place(&mut samples, ch, -1.0);
+
+        dynamics::process(
+            &mut samples,
+            ch,
+            sample_rate,
+            &dynamics::DynamicsParams {
+                threshold_db: -18.0,
+                ratio: 3.5,
+                knee_width_db: 6.0,
+                attack_ms: 5.0,
+                release_ms: 120.0,
+                lookahead_ms: 1.0,
+                makeup_gain_db: 3.0,
+            },
+        );
+
+        // Limiter: threshold=-5dB, makeup_target=-1dB — modeled as boosting
+        // by the (target - threshold) headroom, then hard-limiting (very
+        // high ratio) so nothing exceeds that target ceiling.
+        dynamics::process(
+            &mut samples,
+            ch,
+            sample_rate,
+            &dynamics::DynamicsParams {
+                threshold_db: -5.0,
+                ratio: 1000.0,
+                knee_width_db: 2.0,
+                attack_ms: 1.0,
+                release_ms: 20.0,
+                lookahead_ms: 1.0,
+                makeup_gain_db: -1.0 - -5.0,
+            },
+        );
+
+        reverb::apply(
+            &mut samples,
+            ch,
+            sample_rate,
+            &reverb::ReverbParams {
+                room_size: 25.0,
+                reverberance: 15.0,
+                hf_damping: 70.0,
+                tone_low: 100.0,
+                tone_high: 20.0,
+                wet_gain_db: -8.0,
+                dry_gain_db: 0.0,
+                stereo_width: 100.0,
+                pre_delay_ms: 10.0,
+                wet_only: false,
+            },
+        );
+
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
+    }
+
+    /// A Freeverb-style reverb (see the `reverb` module) with the same
+    /// controls as Audacity's built-in Reverb effect. Destructive: bakes
+    /// the clip's current trim state into a fresh buffer.
+    pub fn apply_reverb(&mut self, clip_id: ClipId, params: &reverb::ReverbParams) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let mut samples = clip.visible_samples().to_vec();
+        reverb::apply(&mut samples, channels as usize, sample_rate, params);
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
+    }
+
+    /// Audacity-style Echo: `output[n] = input[n] + decay * output[n -
+    /// delay]` — a recursive (feedback) repeat, so a `decay` at or above
+    /// 1.0 will build up rather than fade out, exactly as in Audacity.
+    /// Destructive: bakes the clip's current trim state into a fresh
+    /// buffer.
+    pub fn apply_echo(&mut self, clip_id: ClipId, delay_seconds: f32, decay: f32) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels() as usize;
+        let mut samples = clip.visible_samples().to_vec();
+        let delay_samples = ((delay_seconds.max(0.0)) * sample_rate).round() as usize;
+        if delay_samples > 0 && channels > 0 {
+            let frames = samples.len() / channels;
+            for frame in delay_samples..frames {
+                for c in 0..channels {
+                    let echoed = samples[(frame - delay_samples) * channels + c] * decay;
+                    samples[frame * channels + c] = (samples[frame * channels + c] + echoed).clamp(-1.0, 1.0);
+                }
+            }
+        }
+        *clip = Clip::from_samples_channels(
+            clip.id,
+            clip.name.clone(),
+            clip.start_sample,
+            samples,
+            channels as u8,
+        );
+    }
+
+    /// Audacity-style hard-clipping distortion: boosts by `drive_db` then
+    /// hard-clips anything beyond `+-threshold` back to the threshold.
+    /// Destructive: bakes the clip's current trim state into a fresh
+    /// buffer.
+    pub fn apply_hard_clip_distortion(&mut self, clip_id: ClipId, drive_db: f32, threshold: f32) {
+        let threshold = threshold.clamp(0.01, 1.0);
+        self.apply_sample_transform(clip_id, |s| {
+            (s * db_to_gain(drive_db)).clamp(-threshold, threshold)
+        });
+    }
+
+    /// Inverts phase: multiplies every sample by -1. Destructive: bakes
+    /// the clip's current trim state into a fresh buffer.
+    pub fn apply_invert(&mut self, clip_id: ClipId) {
+        self.apply_sample_transform(clip_id, |s| -s);
+    }
+
+    /// Runs a clip's (visible) samples through a per-sample transform `f`
+    /// in place. Destructive: bakes the clip's current trim state into a
+    /// fresh buffer.
+    fn apply_sample_transform(&mut self, clip_id: ClipId, f: impl Fn(f32) -> f32) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let samples: Vec<f32> = clip.visible_samples().iter().map(|&s| f(s)).collect();
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
+    }
+
+    /// Reverses the clip's audio in time (frame order flipped; each
+    /// frame's channels stay together). Destructive: bakes the clip's
+    /// current trim state into a fresh buffer.
+    pub fn apply_reverse(&mut self, clip_id: ClipId) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels() as usize;
+        let mut samples = clip.visible_samples().to_vec();
+        let frames = samples.len() / channels;
+        for frame in 0..frames / 2 {
+            let other = frames - 1 - frame;
+            for c in 0..channels {
+                samples.swap(frame * channels + c, other * channels + c);
+            }
+        }
+        *clip = Clip::from_samples_channels(
+            clip.id,
+            clip.name.clone(),
+            clip.start_sample,
+            samples,
+            channels as u8,
+        );
+    }
+
+    /// Swaps the left/right channels of a stereo clip (a no-op on mono
+    /// clips). Destructive: bakes the clip's current trim state into a
+    /// fresh buffer.
+    pub fn apply_swap_channels(&mut self, clip_id: ClipId) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        if channels < 2 {
+            return;
+        }
+        let channels = channels as usize;
+        let mut samples = clip.visible_samples().to_vec();
+        let frames = samples.len() / channels;
+        for frame in 0..frames {
+            samples.swap(frame * channels, frame * channels + 1);
+        }
+        *clip = Clip::from_samples_channels(
+            clip.id,
+            clip.name.clone(),
+            clip.start_sample,
+            samples,
+            channels as u8,
+        );
+    }
+
+    /// A port of "trip-toggler.py": finds clear low points in the clip and
+    /// alternates a fade-down and a fade-up across the resulting segments
+    /// — see the `trip_toggler` module for the algorithm and what's
+    /// intentionally left out of this port (batch/file-level features that
+    /// don't apply to a single selection). Destructive: bakes the clip's
+    /// current trim state into a fresh buffer.
+    pub fn apply_trip_toggler(&mut self, clip_id: ClipId, params: &trip_toggler::TripTogglerParams) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let mut samples = clip.visible_samples().to_vec();
+        trip_toggler::apply(&mut samples, channels as usize, sample_rate, params);
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, samples, channels);
+    }
+
+    /// A constant-ratio Tempo Up/Down: WSOLA time-stretch by `tempo_percent`
+    /// (Audacity's "Change Tempo" convention: `+10.0` finishes 10% faster,
+    /// i.e. shorter) with pitch left untouched. Destructive: bakes the
+    /// clip's current trim state into a fresh buffer, and its length
+    /// generally changes.
+    pub fn apply_tempo_shift(&mut self, clip_id: ClipId, tempo_percent: f32) {
+        let params = stretch::RampParams {
+            initial_tempo_percent: tempo_percent,
+            final_tempo_percent: tempo_percent,
+            initial_pitch_semitones: 0.0,
+            final_pitch_semitones: 0.0,
+        };
+        self.apply_stretch_ramp(clip_id, &params);
+    }
+
+    /// Audacity-style Sliding Stretch: tempo and pitch each ramp linearly
+    /// from an initial value (clip start) to a final value (clip end) — see
+    /// `stretch::apply_time_pitch_ramp`. Destructive: bakes the clip's
+    /// current trim state into a fresh buffer, and its length generally
+    /// changes.
+    pub fn apply_sliding_stretch(&mut self, clip_id: ClipId, params: &stretch::RampParams) {
+        self.apply_stretch_ramp(clip_id, params);
+    }
+
+    fn apply_stretch_ramp(&mut self, clip_id: ClipId, params: &stretch::RampParams) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+        self.push_undo();
+        let Some(track) = self.track_mut(track_id) else {
+            return;
+        };
+        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
+            return;
+        };
+        let channels = clip.channels();
+        let source = clip.visible_samples().to_vec();
+        let result = stretch::apply_time_pitch_ramp(&source, channels as usize, sample_rate, params);
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, result, channels);
+    }
+
+    /// Builds two pitch/tempo-shifted variants of a clip ("A": pitched up
+    /// and sped/slowed by `tempo_x_percent`; "B": pitched down and
+    /// sped/slowed by `-tempo_y_percent`), lays out 12 back-to-back [A, B]
+    /// repetitions (24 clips) starting right after the original clip ends
+    /// (same convention as `duplicate_selection` — the copy goes right
+    /// after the source, not on top of it), joins them into one clip, then
+    /// applies its own Adjustable Fade In and its own Sliding Stretch
+    /// (independent settings from those effects' regular Effects-menu
+    /// entries). Destructive/generative: the original clip is left in
+    /// place; this adds new clips alongside it (undoable, like any other
+    /// clip-adding operation).
+    pub fn apply_rattle(&mut self, clip_id: ClipId, params: &RattleParams) {
+        let Some(track_id) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let sample_rate = self.sample_rate_hz as f32;
+
+        let Some((channels, base_start, original_samples)) = self
+            .track(track_id)
+            .and_then(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .map(|c| (c.channels(), c.end_sample(), c.visible_samples().to_vec()))
+        else {
+            return;
+        };
+        let ch = channels as usize;
+
+        let a_pitched = resample_for_pitch(&original_samples, ch, params.pitch_up_semitones);
+        let a_final = stretch::apply_time_pitch_ramp(
+            &a_pitched,
+            ch,
+            sample_rate,
+            &stretch::RampParams {
+                initial_tempo_percent: params.tempo_x_percent,
+                final_tempo_percent: params.tempo_x_percent,
+                initial_pitch_semitones: 0.0,
+                final_pitch_semitones: 0.0,
+            },
+        );
+
+        let b_pitched = resample_for_pitch(&original_samples, ch, -params.pitch_down_semitones);
+        let b_final = stretch::apply_time_pitch_ramp(
+            &b_pitched,
+            ch,
+            sample_rate,
+            &stretch::RampParams {
+                initial_tempo_percent: -params.tempo_y_percent,
+                final_tempo_percent: -params.tempo_y_percent,
+                initial_pitch_semitones: 0.0,
+                final_pitch_semitones: 0.0,
+            },
+        );
+
+        self.push_undo();
+        let variants = [&a_final, &b_final];
+        let mut cursor = base_start;
+        let mut placed_ids = Vec::new();
+        for _ in 0..12 {
+            for (i, variant) in variants.iter().enumerate() {
+                let id = self.alloc_clip_id();
+                let frames = (variant.len() / ch.max(1)) as u64;
+                let label = if i == 0 { "Rattle A" } else { "Rattle B" };
+                let Some(track) = self.track_mut(track_id) else {
+                    return;
+                };
+                track.clips.push(Clip::from_samples_channels(
+                    id,
+                    label.to_string(),
+                    cursor,
+                    (*variant).clone(),
+                    channels,
+                ));
+                placed_ids.push(id);
+                cursor += frames;
+            }
+        }
+
+        let joined = self.join_clips(&placed_ids);
+        let Some(&joined_id) = joined.first() else {
+            return;
+        };
+        self.apply_adjustable_fade(joined_id, params.fade_in_start_gain, params.fade_in_end_gain);
+        self.apply_sliding_stretch(joined_id, &params.stretch);
+    }
+
     /// Shifts a clip's pitch by `semitones` (positive = up, negative =
     /// down) using the classic "tape speed" trick: resampling the clip
     /// changes both its pitch and its playback duration together. A true
@@ -771,30 +1272,9 @@ impl Project {
             return;
         };
 
-        let channels = clip.channels() as usize;
-        let source = clip.visible_samples();
-        let frames = source.len() / channels;
-        let ratio = 2f32.powf(semitones / 12.0);
-        let new_frames = ((frames as f32) / ratio).round().max(1.0) as usize;
-        let mut resampled = vec![0.0f32; new_frames * channels];
-        let frame_sample = |frame: usize, ch: usize| -> f32 { source.get(frame * channels + ch).copied().unwrap_or(0.0) };
-        for ch in 0..channels {
-            for i in 0..new_frames {
-                let src_pos = i as f32 * ratio;
-                let idx = src_pos.floor() as usize;
-                let frac = src_pos - idx as f32;
-                let a = frame_sample(idx, ch);
-                let b = frame_sample(idx + 1, ch);
-                resampled[i * channels + ch] = a + (b - a) * frac;
-            }
-        }
-        *clip = Clip::from_samples_channels(
-            clip.id,
-            clip.name.clone(),
-            clip.start_sample,
-            resampled,
-            channels as u8,
-        );
+        let channels = clip.channels();
+        let resampled = resample_for_pitch(clip.visible_samples(), channels as usize, semitones);
+        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, resampled, channels);
     }
 
     /// Silences samples in `[from_sample, to_sample)` (absolute project

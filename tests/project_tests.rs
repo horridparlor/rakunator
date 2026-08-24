@@ -498,3 +498,246 @@ fn merge_track_with_below_creates_one_stereo_track() {
     assert_eq!(merged.clips[0].channels(), 2);
     assert_eq!(merged.clips[0].visible_samples(), &[0.6, -0.3, 0.6, -0.3]);
 }
+
+fn sine_samples(sample_rate: u32, frames: usize, freq: f32) -> Vec<f32> {
+    (0..frames)
+        .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate as f32).sin())
+        .collect()
+}
+
+#[test]
+fn invert_flips_the_sign_of_every_sample() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![0.5, -0.25, 0.0]).unwrap();
+
+    project.apply_invert(clip_id);
+
+    let samples = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(samples, vec![-0.5, 0.25, 0.0]);
+}
+
+#[test]
+fn reverse_flips_frame_order_keeping_channels_together() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 2;
+    let clip_id = project.add_clip_channels(track, "c".into(), 0, vec![1.0, -1.0, 2.0, -2.0, 3.0, -3.0], 2).unwrap();
+
+    project.apply_reverse(clip_id);
+
+    let samples = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(samples, vec![3.0, -3.0, 2.0, -2.0, 1.0, -1.0]);
+}
+
+#[test]
+fn swap_channels_swaps_left_and_right() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    let clip_id = project.add_clip_channels(track, "c".into(), 0, vec![0.1, 0.9, 0.2, 0.8], 2).unwrap();
+
+    project.apply_swap_channels(clip_id);
+
+    let samples = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(samples, vec![0.9, 0.1, 0.8, 0.2]);
+}
+
+#[test]
+fn swap_channels_is_a_no_op_on_mono() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![0.1, 0.2, 0.3]).unwrap();
+
+    project.apply_swap_channels(clip_id);
+
+    let samples = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(samples, vec![0.1, 0.2, 0.3]);
+}
+
+#[test]
+fn echo_adds_a_delayed_decayed_repeat() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let mut samples = vec![0.0f32; 10];
+    samples[0] = 1.0;
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+
+    // Sample rate is 48_000, so a 1-sample delay needs an absurdly small
+    // time — instead pick a delay in seconds that lands exactly on sample
+    // index 3 at this project's sample rate.
+    let delay_seconds = 3.0 / 48_000.0;
+    project.apply_echo(clip_id, delay_seconds, 0.5);
+
+    let out = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert!((out[0] - 1.0).abs() < 1e-6);
+    assert!((out[3] - 0.5).abs() < 1e-6, "expected the decayed echo at sample 3, got {}", out[3]);
+}
+
+#[test]
+fn hard_clip_distortion_clamps_to_the_threshold() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![0.9, -0.9, 0.1]).unwrap();
+
+    project.apply_hard_clip_distortion(clip_id, 12.0, 0.5);
+
+    let out = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert!((out[0] - 0.5).abs() < 1e-6, "loud positive sample should clip to the threshold, got {}", out[0]);
+    assert!((out[1] - -0.5).abs() < 1e-6, "loud negative sample should clip to -threshold, got {}", out[1]);
+    assert!(out[2].abs() <= 0.5 + 1e-6);
+}
+
+#[test]
+fn tempo_shift_changes_clip_length_without_crashing() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let samples = sine_samples(48_000, 48_000 / 2, 220.0); // 0.5s
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+    let before_len = project.track(track).unwrap().clips[0].len_samples();
+
+    project.apply_tempo_shift(clip_id, 50.0); // 50% faster -> shorter
+
+    let after_len = project.track(track).unwrap().clips[0].len_samples();
+    assert!(after_len < before_len, "speeding up tempo should shorten the clip: {before_len} -> {after_len}");
+}
+
+#[test]
+fn sliding_stretch_ramps_tempo_and_pitch_without_crashing() {
+    use rakunator::project::stretch::RampParams;
+
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let samples = sine_samples(48_000, 48_000 / 2, 220.0);
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+
+    project.apply_sliding_stretch(
+        clip_id,
+        &RampParams {
+            initial_tempo_percent: -20.0,
+            final_tempo_percent: 20.0,
+            initial_pitch_semitones: -2.0,
+            final_pitch_semitones: 2.0,
+        },
+    );
+
+    let clip = &project.track(track).unwrap().clips[0];
+    assert!(clip.len_samples() > 0);
+    assert!(clip.visible_samples().iter().all(|s| s.is_finite()));
+}
+
+#[test]
+fn reverb_leaves_a_tail_after_the_clip_s_own_content_would_have_ended() {
+    use rakunator::project::reverb::ReverbParams;
+
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let mut samples = vec![0.0f32; 8000];
+    samples[0] = 1.0;
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+
+    project.apply_reverb(clip_id, &ReverbParams::default());
+
+    let out = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(out.len(), 8000);
+    assert!(out[4000..8000].iter().any(|&s| s.abs() > 1e-4), "expected an audible reverb tail");
+}
+
+#[test]
+fn give_to_speech_and_telephone_run_without_crashing() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let clip_a = project.add_clip(track, "a".into(), 0, sine_samples(48_000, 4096, 1000.0)).unwrap();
+    let clip_b = project.add_clip(track, "b".into(), 5000, sine_samples(48_000, 4096, 1000.0)).unwrap();
+
+    project.apply_give_to_speech(clip_a);
+    project.apply_telephone(clip_b);
+
+    assert!(project.track(track).unwrap().clips[0].visible_samples().iter().all(|s| s.is_finite()));
+    assert!(project.track(track).unwrap().clips[1].visible_samples().iter().all(|s| s.is_finite()));
+}
+
+#[test]
+fn autotune_runs_the_full_chain_without_crashing() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let samples = sine_samples(48_000, 48_000, 440.0); // 1s
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+
+    project.apply_autotune(clip_id);
+
+    let out = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(out.len(), 48_000);
+    assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+}
+
+#[test]
+fn rattle_builds_24_variants_and_joins_them_into_one_clip_after_the_original() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+    let samples = sine_samples(48_000, 4800, 220.0); // 0.1s
+    let clip_id = project.add_clip(track, "c".into(), 0, samples).unwrap();
+
+    let params = rakunator::project::RattleParams {
+        pitch_up_semitones: 1.0,
+        pitch_down_semitones: 1.0,
+        tempo_x_percent: 10.0,
+        tempo_y_percent: 10.0,
+        fade_in_start_gain: 0.0,
+        fade_in_end_gain: 1.0,
+        stretch: rakunator::project::stretch::RampParams {
+            initial_tempo_percent: 0.0,
+            final_tempo_percent: 0.0,
+            initial_pitch_semitones: 0.0,
+            final_pitch_semitones: 0.0,
+        },
+    };
+    project.apply_rattle(clip_id, &params);
+
+    let clips = &project.track(track).unwrap().clips;
+    // The original clip, plus one joined clip built from the 24 variants.
+    assert_eq!(clips.len(), 2);
+    let original = clips.iter().find(|c| c.id == clip_id).unwrap();
+    let joined = clips.iter().find(|c| c.id != clip_id).unwrap();
+    assert!(joined.start_sample >= original.end_sample());
+    assert!(joined.len_samples() > original.len_samples() * 20);
+    assert!(joined.visible_samples().iter().all(|s| s.is_finite()));
+}
+
+#[test]
+fn trip_toggler_runs_on_a_clip_and_stays_in_range() {
+    use rakunator::project::trip_toggler::TripTogglerParams;
+
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.track_mut(track).unwrap().channels = 1;
+
+    // Two short decaying "hits" separated by silence, so there's a clear
+    // low point in between for the effect to find.
+    let mut samples = Vec::new();
+    for _ in 0..2 {
+        for i in 0..4800usize {
+            let t = i as f32 / 48_000.0;
+            let envelope = (-3.0 * i as f32 / 4800.0).exp();
+            samples.push(envelope * (2.0 * std::f32::consts::PI * 440.0 * t).sin());
+        }
+        samples.extend(std::iter::repeat_n(0.0, 4800));
+    }
+    let clip_id = project.add_clip(track, "c".into(), 0, samples.clone()).unwrap();
+
+    project.apply_trip_toggler(clip_id, &TripTogglerParams::default());
+
+    let out = project.track(track).unwrap().clips[0].visible_samples().to_vec();
+    assert_eq!(out.len(), samples.len());
+    assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+    assert!(out.iter().zip(samples.iter()).any(|(a, b)| (a - b).abs() > 1e-6));
+}

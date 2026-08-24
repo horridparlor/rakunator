@@ -1,6 +1,9 @@
 use super::timeline::format_time;
 use super::RakunatorApp;
-use crate::project::{db_to_gain, ClipId, TrackId};
+use crate::project::reverb::ReverbParams;
+use crate::project::stretch::RampParams;
+use crate::project::trip_toggler::TripTogglerParams;
+use crate::project::{db_to_gain, ClipId, RattleParams, TrackId};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum LastEffect {
@@ -8,6 +11,8 @@ pub enum LastEffect {
     PitchDown,
     VolumeUp,
     VolumeDown,
+    TempoUp,
+    TempoDown,
 }
 
 /// Pitch/volume step sizes — Up and Down each have their own independent
@@ -34,6 +39,57 @@ pub struct EffectsState {
     /// there.
     pub fade_toggle_starts_with_in: bool,
     pub last_effect: Option<LastEffect>,
+
+    pub tempo_up_step_percent: f32,
+    pub tempo_down_step_percent: f32,
+
+    pub reverb_room_size: f32,
+    pub reverb_reverberance: f32,
+    pub reverb_hf_damping: f32,
+    pub reverb_tone_low: f32,
+    pub reverb_tone_high: f32,
+    pub reverb_wet_gain_db: f32,
+    pub reverb_dry_gain_db: f32,
+    pub reverb_stereo_width: f32,
+    pub reverb_pre_delay_ms: f32,
+    pub reverb_wet_only: bool,
+
+    pub echo_delay_seconds: f32,
+    pub echo_decay: f32,
+
+    pub distortion_drive_db: f32,
+    pub distortion_threshold: f32,
+
+    pub stretch_initial_tempo_percent: f32,
+    pub stretch_final_tempo_percent: f32,
+    pub stretch_initial_pitch_semitones: f32,
+    pub stretch_final_pitch_semitones: f32,
+
+    pub rattle_pitch_up_semitones: f32,
+    pub rattle_pitch_down_semitones: f32,
+    pub rattle_tempo_x_percent: f32,
+    pub rattle_tempo_y_percent: f32,
+    pub rattle_fade_in_a_db: f32,
+    pub rattle_fade_in_b_db: f32,
+    pub rattle_stretch_initial_tempo_percent: f32,
+    pub rattle_stretch_final_tempo_percent: f32,
+    pub rattle_stretch_initial_pitch_semitones: f32,
+    pub rattle_stretch_final_pitch_semitones: f32,
+
+    pub tt_high_db: f32,
+    pub tt_low_db: f32,
+    pub tt_super_mode: bool,
+    pub tt_detail: f32,
+    pub tt_instant_shift: bool,
+    pub tt_instant_high_gain_db: f32,
+    pub tt_instant_low_gain_db: f32,
+    pub tt_instant_high_fade_start_db: f32,
+    pub tt_instant_high_fade_end_db: f32,
+    pub tt_instant_low_fade_start_db: f32,
+    pub tt_instant_low_fade_end_db: f32,
+    pub tt_fade_curve_adjust: f32,
+    pub tt_start_high: bool,
+
     settings_open: bool,
     editing_pitch_up: f32,
     editing_pitch_down: f32,
@@ -44,6 +100,50 @@ pub struct EffectsState {
     editing_fade_out_a: f32,
     editing_fade_out_b: f32,
     editing_fade_toggle_starts_with_in: bool,
+    editing_tempo_up: f32,
+    editing_tempo_down: f32,
+    editing_reverb_room_size: f32,
+    editing_reverb_reverberance: f32,
+    editing_reverb_hf_damping: f32,
+    editing_reverb_tone_low: f32,
+    editing_reverb_tone_high: f32,
+    editing_reverb_wet_gain_db: f32,
+    editing_reverb_dry_gain_db: f32,
+    editing_reverb_stereo_width: f32,
+    editing_reverb_pre_delay_ms: f32,
+    editing_reverb_wet_only: bool,
+    editing_echo_delay_seconds: f32,
+    editing_echo_decay: f32,
+    editing_distortion_drive_db: f32,
+    editing_distortion_threshold: f32,
+    editing_stretch_initial_tempo_percent: f32,
+    editing_stretch_final_tempo_percent: f32,
+    editing_stretch_initial_pitch_semitones: f32,
+    editing_stretch_final_pitch_semitones: f32,
+    editing_rattle_pitch_up_semitones: f32,
+    editing_rattle_pitch_down_semitones: f32,
+    editing_rattle_tempo_x_percent: f32,
+    editing_rattle_tempo_y_percent: f32,
+    editing_rattle_fade_in_a_db: f32,
+    editing_rattle_fade_in_b_db: f32,
+    editing_rattle_stretch_initial_tempo_percent: f32,
+    editing_rattle_stretch_final_tempo_percent: f32,
+    editing_rattle_stretch_initial_pitch_semitones: f32,
+    editing_rattle_stretch_final_pitch_semitones: f32,
+
+    editing_tt_high_db: f32,
+    editing_tt_low_db: f32,
+    editing_tt_super_mode: bool,
+    editing_tt_detail: f32,
+    editing_tt_instant_shift: bool,
+    editing_tt_instant_high_gain_db: f32,
+    editing_tt_instant_low_gain_db: f32,
+    editing_tt_instant_high_fade_start_db: f32,
+    editing_tt_instant_high_fade_end_db: f32,
+    editing_tt_instant_low_fade_start_db: f32,
+    editing_tt_instant_low_fade_end_db: f32,
+    editing_tt_fade_curve_adjust: f32,
+    editing_tt_start_high: bool,
 }
 
 impl Default for EffectsState {
@@ -59,6 +159,57 @@ impl Default for EffectsState {
             fade_out_point_b_db: -6.0,
             fade_toggle_starts_with_in: true,
             last_effect: None,
+
+            tempo_up_step_percent: 10.0,
+            tempo_down_step_percent: 10.0,
+
+            reverb_room_size: 75.0,
+            reverb_reverberance: 50.0,
+            reverb_hf_damping: 50.0,
+            reverb_tone_low: 100.0,
+            reverb_tone_high: 100.0,
+            reverb_wet_gain_db: -1.0,
+            reverb_dry_gain_db: -1.0,
+            reverb_stereo_width: 100.0,
+            reverb_pre_delay_ms: 10.0,
+            reverb_wet_only: false,
+
+            echo_delay_seconds: 1.0,
+            echo_decay: 0.5,
+
+            distortion_drive_db: 0.0,
+            distortion_threshold: 0.8,
+
+            stretch_initial_tempo_percent: 0.0,
+            stretch_final_tempo_percent: 0.0,
+            stretch_initial_pitch_semitones: 0.0,
+            stretch_final_pitch_semitones: 0.0,
+
+            rattle_pitch_up_semitones: 1.0,
+            rattle_pitch_down_semitones: 1.0,
+            rattle_tempo_x_percent: 10.0,
+            rattle_tempo_y_percent: 10.0,
+            rattle_fade_in_a_db: -6.0,
+            rattle_fade_in_b_db: 0.0,
+            rattle_stretch_initial_tempo_percent: 0.0,
+            rattle_stretch_final_tempo_percent: 0.0,
+            rattle_stretch_initial_pitch_semitones: 0.0,
+            rattle_stretch_final_pitch_semitones: 0.0,
+
+            tt_high_db: 4.0,
+            tt_low_db: -4.0,
+            tt_super_mode: false,
+            tt_detail: 1.0,
+            tt_instant_shift: false,
+            tt_instant_high_gain_db: 2.0,
+            tt_instant_low_gain_db: -6.0,
+            tt_instant_high_fade_start_db: 4.0,
+            tt_instant_high_fade_end_db: 0.0,
+            tt_instant_low_fade_start_db: -4.0,
+            tt_instant_low_fade_end_db: 4.0,
+            tt_fade_curve_adjust: 0.0,
+            tt_start_high: true,
+
             settings_open: false,
             editing_pitch_up: 1.0,
             editing_pitch_down: 1.0,
@@ -69,6 +220,50 @@ impl Default for EffectsState {
             editing_fade_out_a: 0.0,
             editing_fade_out_b: -6.0,
             editing_fade_toggle_starts_with_in: true,
+            editing_tempo_up: 10.0,
+            editing_tempo_down: 10.0,
+            editing_reverb_room_size: 75.0,
+            editing_reverb_reverberance: 50.0,
+            editing_reverb_hf_damping: 50.0,
+            editing_reverb_tone_low: 100.0,
+            editing_reverb_tone_high: 100.0,
+            editing_reverb_wet_gain_db: -1.0,
+            editing_reverb_dry_gain_db: -1.0,
+            editing_reverb_stereo_width: 100.0,
+            editing_reverb_pre_delay_ms: 10.0,
+            editing_reverb_wet_only: false,
+            editing_echo_delay_seconds: 1.0,
+            editing_echo_decay: 0.5,
+            editing_distortion_drive_db: 0.0,
+            editing_distortion_threshold: 0.8,
+            editing_stretch_initial_tempo_percent: 0.0,
+            editing_stretch_final_tempo_percent: 0.0,
+            editing_stretch_initial_pitch_semitones: 0.0,
+            editing_stretch_final_pitch_semitones: 0.0,
+            editing_rattle_pitch_up_semitones: 1.0,
+            editing_rattle_pitch_down_semitones: 1.0,
+            editing_rattle_tempo_x_percent: 10.0,
+            editing_rattle_tempo_y_percent: 10.0,
+            editing_rattle_fade_in_a_db: -6.0,
+            editing_rattle_fade_in_b_db: 0.0,
+            editing_rattle_stretch_initial_tempo_percent: 0.0,
+            editing_rattle_stretch_final_tempo_percent: 0.0,
+            editing_rattle_stretch_initial_pitch_semitones: 0.0,
+            editing_rattle_stretch_final_pitch_semitones: 0.0,
+
+            editing_tt_high_db: 4.0,
+            editing_tt_low_db: -4.0,
+            editing_tt_super_mode: false,
+            editing_tt_detail: 1.0,
+            editing_tt_instant_shift: false,
+            editing_tt_instant_high_gain_db: 2.0,
+            editing_tt_instant_low_gain_db: -6.0,
+            editing_tt_instant_high_fade_start_db: 4.0,
+            editing_tt_instant_high_fade_end_db: 0.0,
+            editing_tt_instant_low_fade_start_db: -4.0,
+            editing_tt_instant_low_fade_end_db: 4.0,
+            editing_tt_fade_curve_adjust: 0.0,
+            editing_tt_start_high: true,
         }
     }
 }
@@ -222,6 +417,14 @@ pub fn repeat_last_effect(app: &mut RakunatorApp) {
             let factor = 10f32.powf(-app.effects.volume_down_step_db / 20.0);
             apply_to_targets(app, &targets, move |p, id| p.apply_gain(id, factor));
         }
+        LastEffect::TempoUp => {
+            let step = app.effects.tempo_up_step_percent;
+            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, step));
+        }
+        LastEffect::TempoDown => {
+            let step = app.effects.tempo_down_step_percent;
+            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, -step));
+        }
     }
 }
 
@@ -350,6 +553,114 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             ui.close();
         }
         ui.separator();
+        let tempo_up_step = app.effects.tempo_up_step_percent;
+        let tempo_down_step = app.effects.tempo_down_step_percent;
+        if ui
+            .add_enabled(enabled, egui::Button::new(format!("Tempo Up (+{tempo_up_step:.1}%)")))
+            .clicked()
+        {
+            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, tempo_up_step));
+            app.effects.last_effect = Some(LastEffect::TempoUp);
+            ui.close();
+        }
+        if ui
+            .add_enabled(enabled, egui::Button::new(format!("Tempo Down (-{tempo_down_step:.1}%)")))
+            .clicked()
+        {
+            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, -tempo_down_step));
+            app.effects.last_effect = Some(LastEffect::TempoDown);
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(enabled, egui::Button::new("Give to Speech")).clicked() {
+            apply_to_targets(app, &targets, |p, id| p.apply_give_to_speech(id));
+            ui.close();
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Telephone")).clicked() {
+            apply_to_targets(app, &targets, |p, id| p.apply_telephone(id));
+            ui.close();
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Autotune")).clicked() {
+            apply_to_targets(app, &targets, |p, id| p.apply_autotune(id));
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(enabled, egui::Button::new("Reverb")).clicked() {
+            let params = reverb_params(&app.effects);
+            apply_to_targets(app, &targets, move |p, id| p.apply_reverb(id, &params));
+            ui.close();
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Echo")).clicked() {
+            let delay = app.effects.echo_delay_seconds;
+            let decay = app.effects.echo_decay;
+            apply_to_targets(app, &targets, move |p, id| p.apply_echo(id, delay, decay));
+            ui.close();
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Distortion (Hard Clip)")).clicked() {
+            let drive = app.effects.distortion_drive_db;
+            let threshold = app.effects.distortion_threshold;
+            apply_to_targets(app, &targets, move |p, id| p.apply_hard_clip_distortion(id, drive, threshold));
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(enabled, egui::Button::new("Sliding Stretch")).clicked() {
+            let params = sliding_stretch_params(&app.effects);
+            apply_to_targets(app, &targets, move |p, id| p.apply_sliding_stretch(id, &params));
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(enabled, egui::Button::new("Invert")).clicked() {
+            apply_to_targets(app, &targets, |p, id| p.apply_invert(id));
+            ui.close();
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Reverse")).clicked() {
+            apply_to_targets(app, &targets, |p, id| p.apply_reverse(id));
+            ui.close();
+        }
+        if ui
+            .add_enabled(enabled, egui::Button::new("Swap Channels"))
+            .on_hover_text("Swaps left/right on a stereo clip; no effect on mono clips")
+            .clicked()
+        {
+            apply_to_targets(app, &targets, |p, id| p.apply_swap_channels(id));
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add_enabled(enabled, egui::Button::new("Rattle"))
+            .on_hover_text(
+                "Builds pitch/tempo-shifted \"up\" and \"down\" copies of the clip, repeats the \
+                 pair 12 times back-to-back, joins them, then applies its own Adjustable Fade \
+                 In and Sliding Stretch (own settings below, in \"Edit steps...\").",
+            )
+            .clicked()
+        {
+            let params = rattle_params(&app.effects);
+            apply_to_targets(app, &targets, move |p, id| p.apply_rattle(id, &params));
+            ui.close();
+        }
+        if ui
+            .add_enabled(enabled, egui::Button::new("Trip Toggler"))
+            .on_hover_text(
+                "Finds clear quiet low points in the clip and alternates a fade-down/fade-up \
+                 across the resulting segments. Ported from a Python script; when applied to \
+                 several targets at once, each successive clip's start High/Low flips from the \
+                 last, just like the script alternated across files.",
+            )
+            .clicked()
+        {
+            let base_params = trip_toggler_params(&app.effects);
+            let mut start_high = base_params.start_high;
+            let mut project = app.project.lock().unwrap();
+            for &id in &targets {
+                let params = TripTogglerParams { start_high, ..base_params.clone() };
+                project.apply_trip_toggler(id, &params);
+                start_high = !start_high;
+            }
+            drop(project);
+            ui.close();
+        }
+        ui.separator();
         if ui.button("Edit steps...").clicked() {
             app.effects.editing_pitch_up = app.effects.pitch_up_step;
             app.effects.editing_pitch_down = app.effects.pitch_down_step;
@@ -360,10 +671,127 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             app.effects.editing_fade_out_a = app.effects.fade_out_point_a_db;
             app.effects.editing_fade_out_b = app.effects.fade_out_point_b_db;
             app.effects.editing_fade_toggle_starts_with_in = app.effects.fade_toggle_starts_with_in;
+            app.effects.editing_tempo_up = app.effects.tempo_up_step_percent;
+            app.effects.editing_tempo_down = app.effects.tempo_down_step_percent;
+            app.effects.editing_reverb_room_size = app.effects.reverb_room_size;
+            app.effects.editing_reverb_reverberance = app.effects.reverb_reverberance;
+            app.effects.editing_reverb_hf_damping = app.effects.reverb_hf_damping;
+            app.effects.editing_reverb_tone_low = app.effects.reverb_tone_low;
+            app.effects.editing_reverb_tone_high = app.effects.reverb_tone_high;
+            app.effects.editing_reverb_wet_gain_db = app.effects.reverb_wet_gain_db;
+            app.effects.editing_reverb_dry_gain_db = app.effects.reverb_dry_gain_db;
+            app.effects.editing_reverb_stereo_width = app.effects.reverb_stereo_width;
+            app.effects.editing_reverb_pre_delay_ms = app.effects.reverb_pre_delay_ms;
+            app.effects.editing_reverb_wet_only = app.effects.reverb_wet_only;
+            app.effects.editing_echo_delay_seconds = app.effects.echo_delay_seconds;
+            app.effects.editing_echo_decay = app.effects.echo_decay;
+            app.effects.editing_distortion_drive_db = app.effects.distortion_drive_db;
+            app.effects.editing_distortion_threshold = app.effects.distortion_threshold;
+            app.effects.editing_stretch_initial_tempo_percent = app.effects.stretch_initial_tempo_percent;
+            app.effects.editing_stretch_final_tempo_percent = app.effects.stretch_final_tempo_percent;
+            app.effects.editing_stretch_initial_pitch_semitones = app.effects.stretch_initial_pitch_semitones;
+            app.effects.editing_stretch_final_pitch_semitones = app.effects.stretch_final_pitch_semitones;
+            app.effects.editing_rattle_pitch_up_semitones = app.effects.rattle_pitch_up_semitones;
+            app.effects.editing_rattle_pitch_down_semitones = app.effects.rattle_pitch_down_semitones;
+            app.effects.editing_rattle_tempo_x_percent = app.effects.rattle_tempo_x_percent;
+            app.effects.editing_rattle_tempo_y_percent = app.effects.rattle_tempo_y_percent;
+            app.effects.editing_rattle_fade_in_a_db = app.effects.rattle_fade_in_a_db;
+            app.effects.editing_rattle_fade_in_b_db = app.effects.rattle_fade_in_b_db;
+            app.effects.editing_rattle_stretch_initial_tempo_percent =
+                app.effects.rattle_stretch_initial_tempo_percent;
+            app.effects.editing_rattle_stretch_final_tempo_percent =
+                app.effects.rattle_stretch_final_tempo_percent;
+            app.effects.editing_rattle_stretch_initial_pitch_semitones =
+                app.effects.rattle_stretch_initial_pitch_semitones;
+            app.effects.editing_rattle_stretch_final_pitch_semitones =
+                app.effects.rattle_stretch_final_pitch_semitones;
+            app.effects.editing_tt_high_db = app.effects.tt_high_db;
+            app.effects.editing_tt_low_db = app.effects.tt_low_db;
+            app.effects.editing_tt_super_mode = app.effects.tt_super_mode;
+            app.effects.editing_tt_detail = app.effects.tt_detail;
+            app.effects.editing_tt_instant_shift = app.effects.tt_instant_shift;
+            app.effects.editing_tt_instant_high_gain_db = app.effects.tt_instant_high_gain_db;
+            app.effects.editing_tt_instant_low_gain_db = app.effects.tt_instant_low_gain_db;
+            app.effects.editing_tt_instant_high_fade_start_db = app.effects.tt_instant_high_fade_start_db;
+            app.effects.editing_tt_instant_high_fade_end_db = app.effects.tt_instant_high_fade_end_db;
+            app.effects.editing_tt_instant_low_fade_start_db = app.effects.tt_instant_low_fade_start_db;
+            app.effects.editing_tt_instant_low_fade_end_db = app.effects.tt_instant_low_fade_end_db;
+            app.effects.editing_tt_fade_curve_adjust = app.effects.tt_fade_curve_adjust;
+            app.effects.editing_tt_start_high = app.effects.tt_start_high;
             app.effects.settings_open = true;
             ui.close();
         }
     });
+}
+
+/// Builds a `ReverbParams` from the current (committed) Reverb settings in
+/// `EffectsState`.
+fn reverb_params(effects: &EffectsState) -> ReverbParams {
+    ReverbParams {
+        room_size: effects.reverb_room_size,
+        reverberance: effects.reverb_reverberance,
+        hf_damping: effects.reverb_hf_damping,
+        tone_low: effects.reverb_tone_low,
+        tone_high: effects.reverb_tone_high,
+        wet_gain_db: effects.reverb_wet_gain_db,
+        dry_gain_db: effects.reverb_dry_gain_db,
+        stereo_width: effects.reverb_stereo_width,
+        pre_delay_ms: effects.reverb_pre_delay_ms,
+        wet_only: effects.reverb_wet_only,
+    }
+}
+
+/// Builds a `RampParams` from the current (committed) Sliding Stretch
+/// settings in `EffectsState`.
+fn sliding_stretch_params(effects: &EffectsState) -> RampParams {
+    RampParams {
+        initial_tempo_percent: effects.stretch_initial_tempo_percent,
+        final_tempo_percent: effects.stretch_final_tempo_percent,
+        initial_pitch_semitones: effects.stretch_initial_pitch_semitones,
+        final_pitch_semitones: effects.stretch_final_pitch_semitones,
+    }
+}
+
+/// Builds a `RattleParams` from the current (committed) Rattle settings in
+/// `EffectsState` — its own Adjustable Fade In / Sliding Stretch values,
+/// independent of those effects' regular settings above.
+fn rattle_params(effects: &EffectsState) -> RattleParams {
+    let fade_in_a = effects.rattle_fade_in_a_db;
+    let fade_in_b = effects.rattle_fade_in_b_db;
+    RattleParams {
+        pitch_up_semitones: effects.rattle_pitch_up_semitones,
+        pitch_down_semitones: effects.rattle_pitch_down_semitones,
+        tempo_x_percent: effects.rattle_tempo_x_percent,
+        tempo_y_percent: effects.rattle_tempo_y_percent,
+        fade_in_start_gain: db_to_gain(fade_in_a.min(fade_in_b)),
+        fade_in_end_gain: db_to_gain(fade_in_a.max(fade_in_b)),
+        stretch: RampParams {
+            initial_tempo_percent: effects.rattle_stretch_initial_tempo_percent,
+            final_tempo_percent: effects.rattle_stretch_final_tempo_percent,
+            initial_pitch_semitones: effects.rattle_stretch_initial_pitch_semitones,
+            final_pitch_semitones: effects.rattle_stretch_final_pitch_semitones,
+        },
+    }
+}
+
+/// Builds a `TripTogglerParams` from the current (committed) Trip Toggler
+/// settings in `EffectsState`.
+fn trip_toggler_params(effects: &EffectsState) -> TripTogglerParams {
+    TripTogglerParams {
+        high_db: effects.tt_high_db,
+        low_db: effects.tt_low_db,
+        super_mode: effects.tt_super_mode,
+        detail: effects.tt_detail,
+        instant_shift: effects.tt_instant_shift,
+        instant_high_gain_db: effects.tt_instant_high_gain_db,
+        instant_low_gain_db: effects.tt_instant_low_gain_db,
+        instant_high_fade_start_db: effects.tt_instant_high_fade_start_db,
+        instant_high_fade_end_db: effects.tt_instant_high_fade_end_db,
+        instant_low_fade_start_db: effects.tt_instant_low_fade_start_db,
+        instant_low_fade_end_db: effects.tt_instant_low_fade_end_db,
+        fade_curve_adjust: effects.tt_fade_curve_adjust,
+        start_high: effects.tt_start_high,
+    }
 }
 
 /// For each selected track, sorts its clips by `start_sample` and applies
@@ -416,7 +844,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
     let mut ok = false;
     let mut cancel = false;
 
-    egui::Window::new("Edit Effect Steps").open(&mut open).show(ctx, |ui| {
+    egui::Window::new("Edit Effect Steps").open(&mut open).max_height(600.0).show(ctx, |ui| {
+        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
         egui::Grid::new("effect_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_pitch_up).range(0.1..=12.0).speed(0.1));
@@ -456,6 +885,177 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, false, "Fade Out first");
         });
 
+        ui.add_space(8.0);
+        egui::Grid::new("tempo_steps_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Tempo Up (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_up).range(0.1..=200.0).speed(0.5));
+            ui.end_row();
+
+            ui.label("Tempo Down (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_down).range(0.1..=90.0).speed(0.5));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Reverb:");
+        egui::Grid::new("reverb_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Room Size:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_room_size).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Reverberance:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_reverberance).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("HF Damping:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_hf_damping).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Tone Low:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_tone_low).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Tone High:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_tone_high).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Wet Gain (dB):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_wet_gain_db).range(-60.0..=10.0).speed(0.5));
+            ui.end_row();
+            ui.label("Dry Gain (dB):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_dry_gain_db).range(-60.0..=10.0).speed(0.5));
+            ui.end_row();
+            ui.label("Stereo Width:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_stereo_width).range(0.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Pre-Delay (ms):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_pre_delay_ms).range(0.0..=500.0).speed(1.0));
+            ui.end_row();
+            ui.label("Wet Only:");
+            ui.checkbox(&mut app.effects.editing_reverb_wet_only, "");
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Echo:");
+        egui::Grid::new("echo_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Delay time (s):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_echo_delay_seconds).range(0.001..=10.0).speed(0.05));
+            ui.end_row();
+            ui.label("Decay factor:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_echo_decay).range(0.0..=2.0).speed(0.01));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Distortion (Hard Clip):");
+        egui::Grid::new("distortion_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Drive (dB):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_drive_db).range(0.0..=48.0).speed(0.5));
+            ui.end_row();
+            ui.label("Clip Threshold:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_threshold).range(0.01..=1.0).speed(0.01));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Sliding Stretch: ramps tempo/pitch from the clip's start to its end.");
+        egui::Grid::new("sliding_stretch_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Initial Tempo Change (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Final Tempo Change (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Initial Pitch Shift (semitones):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Final Pitch Shift (semitones):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Rattle (own Adjustable Fade In / Sliding Stretch settings, separate from the ones above):");
+        egui::Grid::new("rattle_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Pitch Up (semitones):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_pitch_up_semitones).range(0.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Pitch Down (semitones):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_pitch_down_semitones).range(0.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Tempo +x% (first clip):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_tempo_x_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Tempo -y% (second clip):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_tempo_y_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Fade In points (dB):");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_fade_in_a_db).range(-60.0..=24.0).speed(0.1));
+                ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_fade_in_b_db).range(-60.0..=24.0).speed(0.1));
+            });
+            ui.end_row();
+            ui.label("Sliding Stretch Initial Tempo (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Sliding Stretch Final Tempo (%):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_tempo_percent).range(-90.0..=200.0).speed(0.5));
+            ui.end_row();
+            ui.label("Sliding Stretch Initial Pitch (st):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Sliding Stretch Final Pitch (st):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        ui.label("Trip Toggler: finds clear low points and alternates a fade down/up across the segments.");
+        ui.horizontal(|ui| {
+            ui.label("Detection mode:");
+            ui.radio_value(&mut app.effects.editing_tt_super_mode, false, "Basic (between hits)");
+            ui.radio_value(&mut app.effects.editing_tt_super_mode, true, "Super (inside a hit's decay)");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Starts:");
+            ui.radio_value(&mut app.effects.editing_tt_start_high, true, "High");
+            ui.radio_value(&mut app.effects.editing_tt_start_high, false, "Low");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Shift mode:");
+            ui.radio_value(&mut app.effects.editing_tt_instant_shift, false, "Gradual (pure fade)");
+            ui.radio_value(&mut app.effects.editing_tt_instant_shift, true, "Instant (step + fade)");
+        });
+        egui::Grid::new("trip_toggler_grid").num_columns(2).show(ui, |ui| {
+            ui.label("Detail (detection fine-tune):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_detail).range(0.01..=10.0).speed(0.05));
+            ui.end_row();
+            ui.label("Fade Curve Adjust (-100..100):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_fade_curve_adjust).range(-100.0..=100.0).speed(1.0));
+            ui.end_row();
+            ui.label("Gradual High dB:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_high_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Gradual Low dB:");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_low_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Instant High Gain Step (dB):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_gain_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Instant Low Gain Step (dB):");
+            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_gain_db).range(-60.0..=24.0).speed(0.1));
+            ui.end_row();
+            ui.label("Instant High Fade (dB):");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_fade_start_db).range(-60.0..=24.0).speed(0.1));
+                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_fade_end_db).range(-60.0..=24.0).speed(0.1));
+            });
+            ui.end_row();
+            ui.label("Instant Low Fade (dB):");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_fade_start_db).range(-60.0..=24.0).speed(0.1));
+                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_fade_end_db).range(-60.0..=24.0).speed(0.1));
+            });
+            ui.end_row();
+        });
+        });
+
         ui.horizontal(|ui| {
             if ui.button("OK").clicked() {
                 ok = true;
@@ -476,6 +1076,52 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         app.effects.fade_out_point_a_db = app.effects.editing_fade_out_a;
         app.effects.fade_out_point_b_db = app.effects.editing_fade_out_b;
         app.effects.fade_toggle_starts_with_in = app.effects.editing_fade_toggle_starts_with_in;
+        app.effects.tempo_up_step_percent = app.effects.editing_tempo_up;
+        app.effects.tempo_down_step_percent = app.effects.editing_tempo_down;
+        app.effects.reverb_room_size = app.effects.editing_reverb_room_size;
+        app.effects.reverb_reverberance = app.effects.editing_reverb_reverberance;
+        app.effects.reverb_hf_damping = app.effects.editing_reverb_hf_damping;
+        app.effects.reverb_tone_low = app.effects.editing_reverb_tone_low;
+        app.effects.reverb_tone_high = app.effects.editing_reverb_tone_high;
+        app.effects.reverb_wet_gain_db = app.effects.editing_reverb_wet_gain_db;
+        app.effects.reverb_dry_gain_db = app.effects.editing_reverb_dry_gain_db;
+        app.effects.reverb_stereo_width = app.effects.editing_reverb_stereo_width;
+        app.effects.reverb_pre_delay_ms = app.effects.editing_reverb_pre_delay_ms;
+        app.effects.reverb_wet_only = app.effects.editing_reverb_wet_only;
+        app.effects.echo_delay_seconds = app.effects.editing_echo_delay_seconds;
+        app.effects.echo_decay = app.effects.editing_echo_decay;
+        app.effects.distortion_drive_db = app.effects.editing_distortion_drive_db;
+        app.effects.distortion_threshold = app.effects.editing_distortion_threshold;
+        app.effects.stretch_initial_tempo_percent = app.effects.editing_stretch_initial_tempo_percent;
+        app.effects.stretch_final_tempo_percent = app.effects.editing_stretch_final_tempo_percent;
+        app.effects.stretch_initial_pitch_semitones = app.effects.editing_stretch_initial_pitch_semitones;
+        app.effects.stretch_final_pitch_semitones = app.effects.editing_stretch_final_pitch_semitones;
+        app.effects.rattle_pitch_up_semitones = app.effects.editing_rattle_pitch_up_semitones;
+        app.effects.rattle_pitch_down_semitones = app.effects.editing_rattle_pitch_down_semitones;
+        app.effects.rattle_tempo_x_percent = app.effects.editing_rattle_tempo_x_percent;
+        app.effects.rattle_tempo_y_percent = app.effects.editing_rattle_tempo_y_percent;
+        app.effects.rattle_fade_in_a_db = app.effects.editing_rattle_fade_in_a_db;
+        app.effects.rattle_fade_in_b_db = app.effects.editing_rattle_fade_in_b_db;
+        app.effects.rattle_stretch_initial_tempo_percent =
+            app.effects.editing_rattle_stretch_initial_tempo_percent;
+        app.effects.rattle_stretch_final_tempo_percent = app.effects.editing_rattle_stretch_final_tempo_percent;
+        app.effects.rattle_stretch_initial_pitch_semitones =
+            app.effects.editing_rattle_stretch_initial_pitch_semitones;
+        app.effects.rattle_stretch_final_pitch_semitones =
+            app.effects.editing_rattle_stretch_final_pitch_semitones;
+        app.effects.tt_high_db = app.effects.editing_tt_high_db;
+        app.effects.tt_low_db = app.effects.editing_tt_low_db;
+        app.effects.tt_super_mode = app.effects.editing_tt_super_mode;
+        app.effects.tt_detail = app.effects.editing_tt_detail;
+        app.effects.tt_instant_shift = app.effects.editing_tt_instant_shift;
+        app.effects.tt_instant_high_gain_db = app.effects.editing_tt_instant_high_gain_db;
+        app.effects.tt_instant_low_gain_db = app.effects.editing_tt_instant_low_gain_db;
+        app.effects.tt_instant_high_fade_start_db = app.effects.editing_tt_instant_high_fade_start_db;
+        app.effects.tt_instant_high_fade_end_db = app.effects.editing_tt_instant_high_fade_end_db;
+        app.effects.tt_instant_low_fade_start_db = app.effects.editing_tt_instant_low_fade_start_db;
+        app.effects.tt_instant_low_fade_end_db = app.effects.editing_tt_instant_low_fade_end_db;
+        app.effects.tt_fade_curve_adjust = app.effects.editing_tt_fade_curve_adjust;
+        app.effects.tt_start_high = app.effects.editing_tt_start_high;
         app.effects.settings_open = false;
     } else if cancel || !open {
         app.effects.settings_open = false;
