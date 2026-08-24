@@ -435,8 +435,15 @@ pub fn draw_lane(
     ui.painter()
         .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-    handle_zoom_and_pan(ui, lane_response.hovered(), rect, state, false);
-    handle_vertical_zoom(ui, lane_response.hovered(), state, track_id);
+    // Plain geometric hover test, not `lane_response.hovered()` — each
+    // clip drawn below has its own `Sense::click_and_drag()` widget on top
+    // of this same area, which otherwise "steals" hover away from the lane
+    // whenever the pointer sits over a clip rather than empty lane space,
+    // silently breaking Ctrl/Alt+Scroll zoom and Shift+Scroll's per-track
+    // waveform zoom right where they're most useful.
+    let hovered = ui.rect_contains_pointer(rect);
+    handle_zoom_and_pan(ui, hovered, rect, state, false);
+    handle_vertical_zoom(ui, hovered, state, track_id);
 
     let px_per_sample = state.px_per_sample;
     let scroll = state.scroll_x_samples;
