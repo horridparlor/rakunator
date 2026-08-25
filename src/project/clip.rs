@@ -97,9 +97,18 @@ impl Clip {
     /// audio, which is an accepted simplification: those operations start
     /// a fresh edit history for the resulting clip(s).
     pub fn visible_samples(&self) -> &[f32] {
+        self.window_samples(self.source_offset, self.length_samples)
+    }
+
+    /// The interleaved samples in an arbitrary source-relative window —
+    /// generalizes `visible_samples` (equivalent to calling this with the
+    /// current `source_offset`/`length_samples`) so the timeline can render
+    /// a live preview of a trim drag against a candidate window before
+    /// it's committed via `trim_start`/`trim_end`.
+    pub(crate) fn window_samples(&self, source_offset: u64, length_samples: u64) -> &[f32] {
         let channels = self.channels as usize;
-        let start = (self.source_offset as usize * channels).min(self.source.len());
-        let end = (start + self.length_samples as usize * channels).min(self.source.len());
+        let start = (source_offset as usize * channels).min(self.source.len());
+        let end = (start + length_samples as usize * channels).min(self.source.len());
         &self.source[start..end]
     }
 
@@ -123,21 +132,57 @@ impl Clip {
     /// the hidden audio available before the window and the timeline's
     /// start). Keeps at least 1 sample visible.
     pub fn trim_start(&mut self, delta_samples: i64) {
-        let max_extend = (-(self.source_offset as i64)).max(-(self.start_sample as i64));
-        let max_trim = self.length_samples as i64 - 1;
-        let delta = delta_samples.clamp(max_extend, max_trim);
-        self.source_offset = (self.source_offset as i64 + delta) as u64;
-        self.length_samples = (self.length_samples as i64 - delta) as u64;
-        self.start_sample = (self.start_sample as i64 + delta) as u64;
+        let preview = self.preview_trim_start(delta_samples);
+        self.start_sample = (self.start_sample as i64 + preview.delta_samples) as u64;
+        self.source_offset = preview.source_offset;
+        self.length_samples = preview.length_samples;
     }
 
     /// Moves the clip's right edge by `delta_samples` (positive shortens
     /// the clip; negative extends it back out, up to the hidden audio
     /// available after the window). Keeps at least 1 sample visible.
     pub fn trim_end(&mut self, delta_samples: i64) {
+        let preview = self.preview_trim_end(delta_samples);
+        self.length_samples = preview.length_samples;
+    }
+
+    /// What `trim_start(delta_samples)` would produce (including the
+    /// actual, clamped delta actually applied), without mutating this clip
+    /// — the shared clamp math behind both `trim_start` itself and the
+    /// timeline's live preview of a trim drag still in progress.
+    pub(crate) fn preview_trim_start(&self, delta_samples: i64) -> TrimPreview {
+        let max_extend = (-(self.source_offset as i64)).max(-(self.start_sample as i64));
+        let max_trim = self.length_samples as i64 - 1;
+        let delta = delta_samples.clamp(max_extend, max_trim);
+        TrimPreview {
+            delta_samples: delta,
+            source_offset: (self.source_offset as i64 + delta) as u64,
+            length_samples: (self.length_samples as i64 - delta) as u64,
+        }
+    }
+
+    /// What `trim_end(delta_samples)` would produce, without mutating this
+    /// clip — see `preview_trim_start`.
+    pub(crate) fn preview_trim_end(&self, delta_samples: i64) -> TrimPreview {
         let max_extend = -(self.trimmable_after() as i64);
         let max_trim = self.length_samples as i64 - 1;
         let delta = delta_samples.clamp(max_extend, max_trim);
-        self.length_samples = (self.length_samples as i64 - delta) as u64;
+        TrimPreview {
+            delta_samples: delta,
+            source_offset: self.source_offset,
+            length_samples: (self.length_samples as i64 - delta) as u64,
+        }
     }
+}
+
+/// The result of `Clip::preview_trim_start`/`preview_trim_end` — what a
+/// trim drag would produce if committed right now.
+pub(crate) struct TrimPreview {
+    /// The actual delta that would be applied, after clamping to the
+    /// available hidden audio (and, for `preview_trim_start`, the
+    /// timeline's start) — needed by the timeline to work out the
+    /// previewed clip's new `start_sample`.
+    pub delta_samples: i64,
+    pub source_offset: u64,
+    pub length_samples: u64,
 }

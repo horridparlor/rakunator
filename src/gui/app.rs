@@ -421,8 +421,10 @@ fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
 }
 
-/// How far Left/Right nudge selected clips per key press.
-const NUDGE_SECONDS: f32 = 0.05;
+/// How far Left/Right nudge selected clips (or the playhead) per key press —
+/// kept small for precise positioning; Shift+Left/Right jump to the very
+/// start/end instead of nudging.
+const NUDGE_SECONDS: f32 = 0.01;
 
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
 /// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N

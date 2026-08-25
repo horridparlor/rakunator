@@ -560,6 +560,20 @@ pub fn draw_lane(
         let id = egui::Id::new(("clip", clip.id.0));
         let response = ui.interact(clip_rect, id, Sense::click_and_drag());
 
+        // Cursor feedback for edge-trimming: a "grab" hand as soon as the
+        // pointer is close enough to an edge that a drag-start there would
+        // trim instead of move, switching to "grabbing" for the duration of
+        // that trim drag once it's actually underway.
+        if being_dragged {
+            if matches!(state.drag.as_ref().map(|d| d.mode), Some(DragMode::TrimStart) | Some(DragMode::TrimEnd)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+        } else if let Some(pointer_x) = response.hover_pos().map(|p| p.x)
+            && ((pointer_x - x).abs() <= EDGE_GRAB_PX || (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX)
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
         if response.drag_started() {
             let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
             let duplicate = ui.ctx().input(|i| i.modifiers.command);
@@ -666,36 +680,67 @@ pub fn draw_lane(
                 }
             }
 
-        let selected = project.selection.contains(&clip.id);
-        draw_clip_rect(
-            ui,
-            clip_rect,
-            rect,
-            &clip.name,
-            &clip.samples,
-            clip.channels,
-            being_dragged,
-            selected,
-            state.vertical_zoom(track_id),
-        );
+        // While trimming this clip's edge, live-preview the clip actually
+        // stretching/shrinking to the candidate boundary (rather than only
+        // showing where it would land once released): recompute its
+        // rect and re-slice its waveform against the same clamped window
+        // `trim_start`/`trim_end` would commit on release.
+        let mut draw_rect = clip_rect;
+        let mut live_samples: Option<Vec<f32>> = None;
+        let move_dragging = being_dragged
+            && matches!(state.drag.as_ref().map(|d| d.mode), Some(DragMode::Move { .. }));
 
-        // Live preview + snap indicator while trimming this clip's edge.
         if let Some(drag) = &state.drag
             && drag.clip_id == clip.id
             && matches!(drag.mode, DragMode::TrimStart | DragMode::TrimEnd)
             && let Some(pointer_x) = ui.ctx().pointer_interact_pos().map(|p| p.x)
         {
+            let from_start = matches!(drag.mode, DragMode::TrimStart);
             let raw = sample_for_x(pointer_x) as i64;
             let snapped = snap_sample(raw, snap_targets, px_per_sample);
             if snapped != raw {
                 state.snap_indicator = Some(snapped.max(0) as u64);
             }
+
+            if let Some(track) = project.track(track_id)
+                && let Some(live_clip) = track.clips.iter().find(|c| c.id == clip.id)
+            {
+                let preview = if from_start {
+                    live_clip.preview_trim_start(snapped - clip.start_sample as i64)
+                } else {
+                    let end = (clip.start_sample + clip.len_samples) as i64;
+                    live_clip.preview_trim_end(end - snapped)
+                };
+                let new_start = if from_start {
+                    (clip.start_sample as i64 + preview.delta_samples).max(0) as u64
+                } else {
+                    clip.start_sample
+                };
+                live_samples = Some(live_clip.window_samples(preview.source_offset, preview.length_samples).to_vec());
+                let dx = x_for(new_start);
+                let dw = (preview.length_samples as f32 * px_per_sample).max(2.0);
+                draw_rect = Rect::from_min_size(egui::pos2(dx, rect.top() + 4.0), Vec2::new(dw, ROW_HEIGHT - 8.0));
+            }
+
             let gx = x_for(snapped.max(0) as u64);
             ui.painter().line_segment(
                 [egui::pos2(gx, clip_rect.top()), egui::pos2(gx, clip_rect.bottom())],
                 Stroke::new(2.0, Color32::from_rgb(120, 170, 255)),
             );
         }
+
+        let selected = project.selection.contains(&clip.id);
+        draw_clip_rect(
+            ui,
+            draw_rect,
+            rect,
+            &clip.name,
+            live_samples.as_deref().unwrap_or(&clip.samples),
+            clip.channels,
+            move_dragging,
+            selected,
+            state.vertical_zoom(track_id),
+        );
 
         let mut menu_action: Option<ClipMenuAction> = None;
         response.context_menu(|ui| {

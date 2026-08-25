@@ -269,12 +269,12 @@ impl Default for EffectsState {
 
             rattle_pitch_up_semitones: 1.0,
             rattle_pitch_down_semitones: 1.0,
-            rattle_tempo_x_percent: 10.0,
-            rattle_tempo_y_percent: 10.0,
+            rattle_tempo_x_percent: 20.0,
+            rattle_tempo_y_percent: 20.0,
             rattle_fade_in_a_db: -6.0,
             rattle_fade_in_b_db: 0.0,
-            rattle_stretch_initial_tempo_percent: 0.0,
-            rattle_stretch_final_tempo_percent: 0.0,
+            rattle_stretch_initial_tempo_percent: 50.0,
+            rattle_stretch_final_tempo_percent: 250.0,
             rattle_stretch_initial_pitch_semitones: 0.0,
             rattle_stretch_final_pitch_semitones: 0.0,
             rattle_repeat_count: 24,
@@ -329,12 +329,12 @@ impl Default for EffectsState {
             editing_stretch_final_pitch_semitones: 0.0,
             editing_rattle_pitch_up_semitones: 1.0,
             editing_rattle_pitch_down_semitones: 1.0,
-            editing_rattle_tempo_x_percent: 10.0,
-            editing_rattle_tempo_y_percent: 10.0,
+            editing_rattle_tempo_x_percent: 20.0,
+            editing_rattle_tempo_y_percent: 20.0,
             editing_rattle_fade_in_a_db: -6.0,
             editing_rattle_fade_in_b_db: 0.0,
-            editing_rattle_stretch_initial_tempo_percent: 0.0,
-            editing_rattle_stretch_final_tempo_percent: 0.0,
+            editing_rattle_stretch_initial_tempo_percent: 50.0,
+            editing_rattle_stretch_final_tempo_percent: 250.0,
             editing_rattle_stretch_initial_pitch_semitones: 0.0,
             editing_rattle_stretch_final_pitch_semitones: 0.0,
             editing_rattle_repeat_count: 24,
@@ -357,6 +357,74 @@ impl Default for EffectsState {
             editing_tt_fade_curve_adjust: 0.0,
             editing_tt_start_high: true,
         }
+    }
+}
+
+impl EffectsState {
+    /// Resets every `editing_*` scratch field (the "Edit Effect Steps"
+    /// dialog's in-progress values) back to `EffectsState::default()`,
+    /// without touching the already-committed settings — mirrors the
+    /// committed-\>editing copy done when the dialog is opened, just sourced
+    /// from the defaults instead. OK still has to be clicked afterwards to
+    /// actually apply the reset (Cancel discards it, same as any other edit).
+    fn reset_editing_to_defaults(&mut self) {
+        let d = EffectsState::default();
+        self.editing_pitch_up = d.pitch_up_step;
+        self.editing_pitch_down = d.pitch_down_step;
+        self.editing_volume_up = d.volume_up_step_db;
+        self.editing_volume_down = d.volume_down_step_db;
+        self.editing_fade_in_a = d.fade_in_point_a_db;
+        self.editing_fade_in_b = d.fade_in_point_b_db;
+        self.editing_fade_out_a = d.fade_out_point_a_db;
+        self.editing_fade_out_b = d.fade_out_point_b_db;
+        self.editing_fade_toggle_starts_with_in = d.fade_toggle_starts_with_in;
+        self.editing_tempo_up = d.tempo_up_step_percent;
+        self.editing_tempo_down = d.tempo_down_step_percent;
+        self.editing_reverb_room_size = d.reverb_room_size;
+        self.editing_reverb_reverberance = d.reverb_reverberance;
+        self.editing_reverb_hf_damping = d.reverb_hf_damping;
+        self.editing_reverb_tone_low = d.reverb_tone_low;
+        self.editing_reverb_tone_high = d.reverb_tone_high;
+        self.editing_reverb_wet_gain_db = d.reverb_wet_gain_db;
+        self.editing_reverb_dry_gain_db = d.reverb_dry_gain_db;
+        self.editing_reverb_stereo_width = d.reverb_stereo_width;
+        self.editing_reverb_pre_delay_ms = d.reverb_pre_delay_ms;
+        self.editing_reverb_wet_only = d.reverb_wet_only;
+        self.editing_echo_delay_seconds = d.echo_delay_seconds;
+        self.editing_echo_decay = d.echo_decay;
+        self.editing_distortion_drive_db = d.distortion_drive_db;
+        self.editing_distortion_threshold = d.distortion_threshold;
+        self.editing_stretch_initial_tempo_percent = d.stretch_initial_tempo_percent;
+        self.editing_stretch_final_tempo_percent = d.stretch_final_tempo_percent;
+        self.editing_stretch_initial_pitch_semitones = d.stretch_initial_pitch_semitones;
+        self.editing_stretch_final_pitch_semitones = d.stretch_final_pitch_semitones;
+        self.editing_rattle_pitch_up_semitones = d.rattle_pitch_up_semitones;
+        self.editing_rattle_pitch_down_semitones = d.rattle_pitch_down_semitones;
+        self.editing_rattle_tempo_x_percent = d.rattle_tempo_x_percent;
+        self.editing_rattle_tempo_y_percent = d.rattle_tempo_y_percent;
+        self.editing_rattle_fade_in_a_db = d.rattle_fade_in_a_db;
+        self.editing_rattle_fade_in_b_db = d.rattle_fade_in_b_db;
+        self.editing_rattle_stretch_initial_tempo_percent = d.rattle_stretch_initial_tempo_percent;
+        self.editing_rattle_stretch_final_tempo_percent = d.rattle_stretch_final_tempo_percent;
+        self.editing_rattle_stretch_initial_pitch_semitones = d.rattle_stretch_initial_pitch_semitones;
+        self.editing_rattle_stretch_final_pitch_semitones = d.rattle_stretch_final_pitch_semitones;
+        self.editing_rattle_repeat_count = d.rattle_repeat_count;
+        self.editing_pan_toggle_high_db = d.pan_toggle_high_db;
+        self.editing_pan_toggle_low_db = d.pan_toggle_low_db;
+        self.editing_pan_toggle_direction = d.pan_toggle_direction;
+        self.editing_tt_high_db = d.tt_high_db;
+        self.editing_tt_low_db = d.tt_low_db;
+        self.editing_tt_super_mode = d.tt_super_mode;
+        self.editing_tt_detail = d.tt_detail;
+        self.editing_tt_instant_shift = d.tt_instant_shift;
+        self.editing_tt_instant_high_gain_db = d.tt_instant_high_gain_db;
+        self.editing_tt_instant_low_gain_db = d.tt_instant_low_gain_db;
+        self.editing_tt_instant_high_fade_start_db = d.tt_instant_high_fade_start_db;
+        self.editing_tt_instant_high_fade_end_db = d.tt_instant_high_fade_end_db;
+        self.editing_tt_instant_low_fade_start_db = d.tt_instant_low_fade_start_db;
+        self.editing_tt_instant_low_fade_end_db = d.tt_instant_low_fade_end_db;
+        self.editing_tt_fade_curve_adjust = d.tt_fade_curve_adjust;
+        self.editing_tt_start_high = d.tt_start_high;
     }
 }
 
@@ -951,11 +1019,23 @@ fn apply_fade_toggle(app: &mut RakunatorApp) {
     }
 }
 
-/// Draws the "Edit steps..." modal for the Pitch/Volume effect step sizes
-/// (Up and Down set independently), with OK/Cancel — a real dialog rather
-/// than a right-click popup, since right-clicking a button nested inside
-/// an already-open menu doesn't reliably open a second, nested popup in
-/// egui.
+/// Draws a bold "subtitle" heading followed by a separator line, marking
+/// the start of one effect's settings group in the "Edit Effect Steps"
+/// dialog — the extra vertical space above it (well beyond a plain
+/// `add_space`) is what keeps a long, otherwise unbroken column of dozens
+/// of fields visually sorted into which effect each one belongs to.
+fn section_header(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(18.0);
+    ui.label(egui::RichText::new(title).strong().size(15.0));
+    ui.separator();
+    ui.add_space(4.0);
+}
+
+/// Draws the "Edit steps..." modal for every effect's tweakable settings
+/// (step sizes, dB points, Reverb/Echo/Rattle/etc. parameters), with
+/// OK/Cancel/Reset to Defaults — a real dialog rather than a right-click
+/// popup, since right-clicking a button nested inside an already-open menu
+/// doesn't reliably open a second, nested popup in egui.
 pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp) {
     if !app.effects.settings_open {
         return;
@@ -967,6 +1047,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
 
     egui::Window::new("Edit Effect Steps").open(&mut open).max_height(600.0).show(ctx, |ui| {
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+        section_header(ui, "Pitch & Volume");
         egui::Grid::new("effect_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_pitch_up).range(0.1..=12.0).speed(0.1));
@@ -985,8 +1066,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Adjustable fades: two dB points, in either order — the effect works out which is louder/quieter.");
+        section_header(ui, "Adjustable Fades");
+        ui.label("Two dB points, in either order — the effect works out which is louder/quieter.");
         egui::Grid::new("fade_points_grid").num_columns(3).show(ui, |ui| {
             ui.label("Fade In points (dB):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_fade_in_a).range(-60.0..=24.0).speed(0.1));
@@ -999,14 +1080,14 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Fade Toggle: which comes first on each selected track's earliest clip?");
+        section_header(ui, "Fade Toggle");
+        ui.label("Which comes first on each selected track's earliest clip?");
         ui.horizontal(|ui| {
             ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, true, "Fade In first");
             ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, false, "Fade Out first");
         });
 
-        ui.add_space(8.0);
+        section_header(ui, "Tempo Steps");
         egui::Grid::new("tempo_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Tempo Up (%):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_up).range(0.1..=200.0).speed(0.5));
@@ -1017,8 +1098,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Reverb:");
+        section_header(ui, "Reverb");
         egui::Grid::new("reverb_grid").num_columns(2).show(ui, |ui| {
             ui.label("Room Size:");
             ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_room_size).range(0.0..=100.0).speed(1.0));
@@ -1052,8 +1132,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Echo:");
+        section_header(ui, "Echo");
         egui::Grid::new("echo_grid").num_columns(2).show(ui, |ui| {
             ui.label("Delay time (s):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_echo_delay_seconds).range(0.001..=10.0).speed(0.05));
@@ -1063,8 +1142,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Distortion (Hard Clip):");
+        section_header(ui, "Distortion (Hard Clip)");
         egui::Grid::new("distortion_grid").num_columns(2).show(ui, |ui| {
             ui.label("Drive (dB):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_drive_db).range(0.0..=48.0).speed(0.5));
@@ -1074,8 +1152,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Sliding Stretch: ramps tempo/pitch from the clip's start to its end.");
+        section_header(ui, "Sliding Stretch");
+        ui.label("Ramps tempo/pitch from the clip's start to its end.");
         egui::Grid::new("sliding_stretch_grid").num_columns(2).show(ui, |ui| {
             ui.label("Initial Tempo Change (%):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_tempo_percent).range(-90.0..=500.0).speed(0.5));
@@ -1091,8 +1169,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Rattle (own Adjustable Fade In / Sliding Stretch settings, separate from the ones above):");
+        section_header(ui, "Rattle");
+        ui.label("Own Adjustable Fade In / Sliding Stretch settings, separate from the ones above.");
         egui::Grid::new("rattle_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
             ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_pitch_up_semitones).range(0.0..=24.0).speed(0.1));
@@ -1131,8 +1209,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         // Always an even number of whole [A, B] pairs, in steps of 2.
         app.effects.editing_rattle_repeat_count = (app.effects.editing_rattle_repeat_count / 2).max(1) * 2;
 
-        ui.add_space(8.0);
-        ui.label("Pan Toggle: splits a stereo clip's channels, fades one up and the other down.");
+        section_header(ui, "Pan Toggle");
+        ui.label("Splits a stereo clip's channels, fades one up and the other down.");
         ui.horizontal(|ui| {
             ui.label("Fade-in side:");
             ui.radio_value(&mut app.effects.editing_pan_toggle_direction, PanToggleDirection::Left, "Left");
@@ -1147,8 +1225,8 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.end_row();
         });
 
-        ui.add_space(8.0);
-        ui.label("Trip Toggler: finds clear low points and alternates a fade down/up across the segments.");
+        section_header(ui, "Trip Toggler");
+        ui.label("Finds clear low points and alternates a fade down/up across the segments.");
         ui.horizontal(|ui| {
             ui.label("Detection mode:");
             ui.radio_value(&mut app.effects.editing_tt_super_mode, false, "Basic (between hits)");
@@ -1204,6 +1282,13 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             }
             if ui.button("Cancel").clicked() {
                 cancel = true;
+            }
+            if ui
+                .button("Reset to Defaults")
+                .on_hover_text("Resets every field above back to its built-in default — click OK to apply, or Cancel to discard.")
+                .clicked()
+            {
+                app.effects.reset_editing_to_defaults();
             }
         });
     });
