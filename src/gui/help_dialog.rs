@@ -117,8 +117,8 @@ fn help_sections() -> &'static [HelpSection] {
                     "Pan horizontally, no modifier needed",
                 ),
                 (
-                    "Shift+Scroll on a track",
-                    "Zoom that track's waveform vertically, to see quiet detail (visual only)",
+                    "Shift+Scroll on a track, or scroll its \"x\" multiplier",
+                    "Zoom that track's waveform vertically (0.25x-4.0x, 0.25 steps), to see quiet detail (visual only)",
                 ),
                 ("Scroll over the Pan / Vol slider", "Nudge it by one step (5% / 0.05)"),
                 ("Bottom scrollbar", "Click/drag to scroll through the song"),
@@ -158,10 +158,13 @@ fn help_sections() -> &'static [HelpSection] {
             rows: &[
                 ("Drag a clip", "Move it in time (drop on another track to move it there)"),
                 ("Ctrl+Drag a clip", "Duplicate it instead of moving it"),
-                ("Drag a clip's left/right edge", "Trim it smaller — drag back out to recover trimmed audio"),
+                (
+                    "Drag a clip's left/right edge",
+                    "Trim it smaller — drag back out to recover trimmed audio; the edge highlights blue as soon as the pointer's close enough to grab it, before you click",
+                ),
                 (
                     "Left / Right arrows",
-                    "Nudge the selected clip(s) in time by a small step, or move the playhead if nothing's selected",
+                    "Nudge the selected clip(s) in time by a small step, or move the playhead if nothing's selected — stops exactly at another clip's edge on the same track rather than stepping past it",
                 ),
                 ("\"S\"", "Split the selected clip(s) at the playhead"),
                 ("\"I\" while hovering a clip", "Split that clip at the playhead (even if it isn't selected)"),
@@ -261,7 +264,10 @@ fn help_sections() -> &'static [HelpSection] {
         HelpSection {
             title: "Effects — general",
             rows: &[
-                ("\"Edit steps...\"", "Every effect's adjustable values live in one dialog, grouped by effect"),
+                (
+                    "\"Edit steps...\"",
+                    "Every effect's adjustable values live in one dialog, grouped by effect, with its own search box; scroll over any value to nudge it by one step",
+                ),
                 ("Effects apply to", "Every clip on the selected track(s) if any are selected, otherwise the clip selection"),
             ],
         },
@@ -295,6 +301,7 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Drag a .wav file onto the window", "Import it as a new track (stereo files import as a stereo track)"),
                 ("Project File... (toolbar)", "Save/Load a .raku project file, with a native file picker"),
                 ("Ctrl+S", "Save straight to the project's current file (or the default path, if it's never been saved)"),
+                ("Ctrl+Shift+S", "Save As — opens a native file picker, then saves to whatever location you choose"),
                 ("Export Project... (toolbar)", "Render the full mixdown to .wav/.mp3 under a name you choose"),
             ],
         },

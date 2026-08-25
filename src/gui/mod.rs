@@ -21,9 +21,15 @@ pub use app::RakunatorApp;
 /// say — many times over for what the user felt as one flick of the wheel.
 /// `Point`-unit deltas (trackpads) are normalized by the same 40px-per-line
 /// speed egui itself defaults to, so one notch feels the same either way.
+/// Callers only call this once they've confirmed the pointer is hovering
+/// the specific widget they want scroll to control (`response.hovered()`),
+/// so a nonzero result also consumes the vertical scroll delta — otherwise
+/// an enclosing `ScrollArea` (e.g. the "Edit Effect Steps" dialog's, or the
+/// track list's) reads the same wheel input independently and scrolls
+/// itself at the same time, on top of whatever value this nudged.
 pub(crate) fn wheel_notches(ui: &egui::Ui) -> f32 {
-    ui.ctx().input(|i| {
-        i.events.iter().fold(0.0, |acc, e| {
+    ui.ctx().input_mut(|i| {
+        let notches = i.events.iter().fold(0.0, |acc, e| {
             let egui::Event::MouseWheel { unit, delta, .. } = e else {
                 return acc;
             };
@@ -32,7 +38,11 @@ pub(crate) fn wheel_notches(ui: &egui::Ui) -> f32 {
                 egui::MouseWheelUnit::Point => delta.y / 40.0,
                 egui::MouseWheelUnit::Page => delta.y,
             }
-        })
+        });
+        if notches != 0.0 {
+            i.smooth_scroll_delta.y = 0.0;
+        }
+        notches
     })
 }
 

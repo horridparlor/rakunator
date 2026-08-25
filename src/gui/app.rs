@@ -605,9 +605,16 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         app.project.lock().unwrap().add_track();
     }
 
-    let save = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::S));
+    let (save, save_as) = ui.ctx().input(|i| {
+        (
+            i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S),
+            i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S),
+        )
+    });
     if save {
         project_file_dialog::save_current(app);
+    } else if save_as {
+        project_file_dialog::save_as(app);
     }
 
     if repeat_effect {
@@ -731,13 +738,47 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         let delta = if nudge_left { -nudge } else { nudge };
         for id in &selected_ids {
             if let Some(track_id) = project.find_clip_track(*id) {
-                let current_start = project
+                let current = project
                     .track(track_id)
                     .and_then(|t| t.clips.iter().find(|c| c.id == *id))
-                    .map(|c| c.start_sample);
-                if let Some(current_start) = current_start {
-                    let new_start = (current_start as i64 + delta).max(0) as u64;
+                    .map(|c| (c.start_sample, c.len_samples()));
+                if let Some((current_start, len)) = current {
+                    let naive_new_start = (current_start as i64 + delta).max(0) as u64;
+                    // Stop exactly at the nearest other clip's edge on this
+                    // track instead of nudging straight through/past it in
+                    // one step — otherwise a nudge step bigger than the
+                    // remaining gap silently creates (or worsens) an
+                    // overlap instead of docking against it.
+                    let other_edges: Vec<u64> = project
+                        .track(track_id)
+                        .map(|t| {
+                            t.clips
+                                .iter()
+                                .filter(|c| c.id != *id)
+                                .flat_map(|c| [c.start_sample, c.end_sample()])
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let blocking_edge = if nudge_right {
+                        let naive_new_end = naive_new_start + len;
+                        let current_end = current_start + len;
+                        other_edges.iter().copied().filter(|&e| e > current_end && e <= naive_new_end).min()
+                    } else {
+                        other_edges.iter().copied().filter(|&e| e < current_start && e >= naive_new_start).max()
+                    };
+                    let new_start = match blocking_edge {
+                        Some(edge) if nudge_right => edge.saturating_sub(len),
+                        Some(edge) => edge,
+                        None => naive_new_start,
+                    };
                     project.move_clip(*id, track_id, new_start);
+                    // Same yellow flash as a click snapping to an edge, so
+                    // stopping here (instead of nudging straight through)
+                    // reads as deliberate, not like the key press did
+                    // nothing.
+                    if let Some(edge) = blocking_edge {
+                        app.timeline.flash_snap(edge);
+                    }
                 }
             }
         }

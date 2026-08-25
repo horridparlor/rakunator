@@ -1038,6 +1038,35 @@ fn section_header(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
+/// Draws a `DragValue` and, if the pointer ends up hovering it, applies
+/// one `step`-sized nudge per scroll-wheel notch (clamped to `range`) —
+/// the same scroll-to-adjust convenience the Pan/Vol sliders already have
+/// (see `track_view::draw_header`), just for the "Edit Effect Steps"
+/// dialog's `DragValue`s instead of a `Slider`.
+fn drag_value_scroll(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f32) {
+    let response = ui.add(egui::DragValue::new(value).range(range.clone()).speed(step));
+    if response.hovered() {
+        let notches = super::wheel_notches(ui);
+        if notches != 0.0 {
+            *value = (*value + notches.round() * step).clamp(*range.start(), *range.end());
+        }
+    }
+}
+
+/// Integer counterpart of `drag_value_scroll`, for `editing_rattle_repeat_count`
+/// (the only non-float field among these `DragValue`s).
+fn drag_value_scroll_u32(ui: &mut egui::Ui, value: &mut u32, range: std::ops::RangeInclusive<u32>, step: f32) {
+    let response = ui.add(egui::DragValue::new(value).range(range.clone()).speed(step));
+    if response.hovered() {
+        let notches = super::wheel_notches(ui);
+        if notches != 0.0 {
+            let delta = (notches.round() * step) as i64;
+            let nudged = (*value as i64 + delta).clamp(*range.start() as i64, *range.end() as i64);
+            *value = nudged as u32;
+        }
+    }
+}
+
 /// Draws the "Edit steps..." modal for every effect's tweakable settings
 /// (step sizes, dB points, Reverb/Echo/Rattle/etc. parameters), with
 /// OK/Cancel/Reset to Defaults — a real dialog rather than a right-click
@@ -1138,19 +1167,19 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         section_header(ui, "Pitch & Volume");
         egui::Grid::new("effect_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_pitch_up).range(0.1..=12.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_pitch_up, 0.1..=12.0, 0.1);
             ui.end_row();
 
             ui.label("Pitch Down (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_pitch_down).range(0.1..=12.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_pitch_down, 0.1..=12.0, 0.1);
             ui.end_row();
 
             ui.label("Volume Up (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_volume_up).range(0.1..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_volume_up, 0.1..=24.0, 0.1);
             ui.end_row();
 
             ui.label("Volume Down (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_volume_down).range(0.1..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_volume_down, 0.1..=24.0, 0.1);
             ui.end_row();
         });
         }
@@ -1160,13 +1189,13 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         ui.label("Two dB points, in either order — the effect works out which is louder/quieter.");
         egui::Grid::new("fade_points_grid").num_columns(3).show(ui, |ui| {
             ui.label("Fade In points (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_fade_in_a).range(-60.0..=24.0).speed(0.1));
-            ui.add(egui::DragValue::new(&mut app.effects.editing_fade_in_b).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_fade_in_a, -60.0..=24.0, 0.1);
+            drag_value_scroll(ui, &mut app.effects.editing_fade_in_b, -60.0..=24.0, 0.1);
             ui.end_row();
 
             ui.label("Fade Out points (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_fade_out_a).range(-60.0..=24.0).speed(0.1));
-            ui.add(egui::DragValue::new(&mut app.effects.editing_fade_out_b).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_fade_out_a, -60.0..=24.0, 0.1);
+            drag_value_scroll(ui, &mut app.effects.editing_fade_out_b, -60.0..=24.0, 0.1);
             ui.end_row();
         });
         }
@@ -1184,11 +1213,11 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         section_header(ui, "Tempo Steps");
         egui::Grid::new("tempo_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Tempo Up (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_up).range(0.1..=200.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_tempo_up, 0.1..=200.0, 0.5);
             ui.end_row();
 
             ui.label("Tempo Down (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_down).range(0.1..=90.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_tempo_down, 0.1..=90.0, 0.5);
             ui.end_row();
         });
         }
@@ -1203,31 +1232,31 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         section_header(ui, "Reverb");
         egui::Grid::new("reverb_grid").num_columns(2).show(ui, |ui| {
             ui.label("Room Size:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_room_size).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_room_size, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Reverberance:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_reverberance).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_reverberance, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("HF Damping:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_hf_damping).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_hf_damping, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Tone Low:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_tone_low).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_tone_low, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Tone High:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_tone_high).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_tone_high, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Wet Gain (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_wet_gain_db).range(-60.0..=10.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_wet_gain_db, -60.0..=10.0, 0.5);
             ui.end_row();
             ui.label("Dry Gain (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_dry_gain_db).range(-60.0..=10.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_dry_gain_db, -60.0..=10.0, 0.5);
             ui.end_row();
             ui.label("Stereo Width:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_stereo_width).range(0.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_stereo_width, 0.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Pre-Delay (ms):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_reverb_pre_delay_ms).range(0.0..=500.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_reverb_pre_delay_ms, 0.0..=500.0, 1.0);
             ui.end_row();
             ui.label("Wet Only:");
             ui.checkbox(&mut app.effects.editing_reverb_wet_only, "");
@@ -1239,10 +1268,10 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         section_header(ui, "Echo");
         egui::Grid::new("echo_grid").num_columns(2).show(ui, |ui| {
             ui.label("Delay time (s):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_echo_delay_seconds).range(0.001..=10.0).speed(0.05));
+            drag_value_scroll(ui, &mut app.effects.editing_echo_delay_seconds, 0.001..=10.0, 0.05);
             ui.end_row();
             ui.label("Decay factor:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_echo_decay).range(0.0..=2.0).speed(0.01));
+            drag_value_scroll(ui, &mut app.effects.editing_echo_decay, 0.0..=2.0, 0.01);
             ui.end_row();
         });
         }
@@ -1251,10 +1280,10 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         section_header(ui, "Distortion (Hard Clip)");
         egui::Grid::new("distortion_grid").num_columns(2).show(ui, |ui| {
             ui.label("Drive (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_drive_db).range(0.0..=48.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_distortion_drive_db, 0.0..=48.0, 0.5);
             ui.end_row();
             ui.label("Clip Threshold:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_threshold).range(0.01..=1.0).speed(0.01));
+            drag_value_scroll(ui, &mut app.effects.editing_distortion_threshold, 0.01..=1.0, 0.01);
             ui.end_row();
         });
         }
@@ -1267,16 +1296,16 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         ui.label("Ramps tempo/pitch from the clip's start to its end.");
         egui::Grid::new("sliding_stretch_grid").num_columns(2).show(ui, |ui| {
             ui.label("Initial Tempo Change (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_tempo_percent).range(-90.0..=500.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_stretch_initial_tempo_percent, -90.0..=500.0, 0.5);
             ui.end_row();
             ui.label("Final Tempo Change (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_tempo_percent).range(-90.0..=500.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_stretch_final_tempo_percent, -90.0..=500.0, 0.5);
             ui.end_row();
             ui.label("Initial Pitch Shift (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_stretch_initial_pitch_semitones, -24.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Final Pitch Shift (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_stretch_final_pitch_semitones, -24.0..=24.0, 0.1);
             ui.end_row();
         });
         }
@@ -1293,37 +1322,37 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         ui.label("Own Adjustable Fade In / Sliding Stretch settings, separate from the ones above.");
         egui::Grid::new("rattle_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_pitch_up_semitones).range(0.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_pitch_up_semitones, 0.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Pitch Down (semitones):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_pitch_down_semitones).range(0.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_pitch_down_semitones, 0.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Tempo +x% (first clip):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_tempo_x_percent).range(-90.0..=200.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_tempo_x_percent, -90.0..=200.0, 0.5);
             ui.end_row();
             ui.label("Tempo -y% (second clip):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_tempo_y_percent).range(-90.0..=200.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_tempo_y_percent, -90.0..=200.0, 0.5);
             ui.end_row();
             ui.label("Fade In points (dB):");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_fade_in_a_db).range(-60.0..=24.0).speed(0.1));
-                ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_fade_in_b_db).range(-60.0..=24.0).speed(0.1));
+                drag_value_scroll(ui, &mut app.effects.editing_rattle_fade_in_a_db, -60.0..=24.0, 0.1);
+                drag_value_scroll(ui, &mut app.effects.editing_rattle_fade_in_b_db, -60.0..=24.0, 0.1);
             });
             ui.end_row();
             ui.label("Sliding Stretch Initial Tempo (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_tempo_percent).range(-90.0..=500.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_initial_tempo_percent, -90.0..=500.0, 0.5);
             ui.end_row();
             ui.label("Sliding Stretch Final Tempo (%):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_tempo_percent).range(-90.0..=500.0).speed(0.5));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_final_tempo_percent, -90.0..=500.0, 0.5);
             ui.end_row();
             ui.label("Sliding Stretch Initial Pitch (st):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_initial_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_initial_pitch_semitones, -24.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Sliding Stretch Final Pitch (st):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_final_pitch_semitones, -24.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Repeat Count (A+B clips):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_rattle_repeat_count).range(2..=128).speed(2.0));
+            drag_value_scroll_u32(ui, &mut app.effects.editing_rattle_repeat_count, 2..=128, 2.0);
             ui.end_row();
         });
         // Always an even number of whole [A, B] pairs, in steps of 2.
@@ -1340,10 +1369,10 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         });
         egui::Grid::new("pan_toggle_grid").num_columns(2).show(ui, |ui| {
             ui.label("High dB (fade-in end / fade-out start):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_pan_toggle_high_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_pan_toggle_high_db, -60.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Low dB (fade-in start / fade-out end):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_pan_toggle_low_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_pan_toggle_low_db, -60.0..=24.0, 0.1);
             ui.end_row();
         });
         }
@@ -1375,33 +1404,33 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         });
         egui::Grid::new("trip_toggler_grid").num_columns(2).show(ui, |ui| {
             ui.label("Detail (detection fine-tune):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_detail).range(0.01..=10.0).speed(0.05));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_detail, 0.01..=10.0, 0.05);
             ui.end_row();
             ui.label("Fade Curve Adjust (-100..100):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_fade_curve_adjust).range(-100.0..=100.0).speed(1.0));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_fade_curve_adjust, -100.0..=100.0, 1.0);
             ui.end_row();
             ui.label("Gradual High dB:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_high_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_high_db, -60.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Gradual Low dB:");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_low_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_low_db, -60.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Instant High Gain Step (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_gain_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_gain_db, -60.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Instant Low Gain Step (dB):");
-            ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_gain_db).range(-60.0..=24.0).speed(0.1));
+            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_gain_db, -60.0..=24.0, 0.1);
             ui.end_row();
             ui.label("Instant High Fade (dB):");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_fade_start_db).range(-60.0..=24.0).speed(0.1));
-                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_high_fade_end_db).range(-60.0..=24.0).speed(0.1));
+                drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_fade_start_db, -60.0..=24.0, 0.1);
+                drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_fade_end_db, -60.0..=24.0, 0.1);
             });
             ui.end_row();
             ui.label("Instant Low Fade (dB):");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_fade_start_db).range(-60.0..=24.0).speed(0.1));
-                ui.add(egui::DragValue::new(&mut app.effects.editing_tt_instant_low_fade_end_db).range(-60.0..=24.0).speed(0.1));
+                drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_fade_start_db, -60.0..=24.0, 0.1);
+                drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_fade_end_db, -60.0..=24.0, 0.1);
             });
             ui.end_row();
         });

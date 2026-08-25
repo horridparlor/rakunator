@@ -75,10 +75,12 @@ impl AudioEngine {
 
     pub fn pause(&self) {
         self.transport.pause();
+        self.meters.reset_all();
     }
 
     pub fn stop(&self) {
         self.transport.stop();
+        self.meters.reset_all();
     }
 
     pub fn seek(&self, sample_pos: u64) {

@@ -132,17 +132,6 @@ pub fn draw_header(
             });
 
             ui.horizontal(|ui| {
-                if ui
-                    .small_button("+")
-                    .on_hover_text("Zoom the waveform in vertically, to see quiet detail (visual only)")
-                    .clicked()
-                {
-                    let zoom = timeline.vertical_zoom(track_id) + VERTICAL_ZOOM_STEP;
-                    timeline.set_vertical_zoom(track_id, zoom);
-                }
-            });
-
-            ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::Slider::new(&mut track.pan_percent, -100..=100)
                         .step_by(5.0)
@@ -178,22 +167,22 @@ pub fn draw_header(
             });
 
             ui.horizontal(|ui| {
-                if ui
-                    .small_button("\u{2212}")
-                    .on_hover_text("Zoom the waveform out vertically (visual only)")
-                    .clicked()
-                {
-                    let zoom = timeline.vertical_zoom(track_id) - VERTICAL_ZOOM_STEP;
-                    timeline.set_vertical_zoom(track_id, zoom);
-                }
-            });
-
-            ui.horizontal(|ui| {
                 ui.toggle_value(&mut track.muted, "M");
                 ui.toggle_value(&mut track.soloed, "S");
                 let (peak_l, peak_r) = engine.meters.read(track_index);
                 meter_widget::draw(ui, peak_l, peak_r);
-                ui.label(format!("{:.2}x", timeline.vertical_zoom(track_id)));
+                let zoom_label = ui
+                    .label(format!("{:.2}x", timeline.vertical_zoom(track_id)))
+                    .on_hover_text("Scroll to zoom the waveform vertically (visual only)");
+                // Scrolling over the multiplier readout zooms it, same
+                // granularity as Shift-scrolling the lane itself.
+                if zoom_label.hovered() {
+                    let notches = super::wheel_notches(ui);
+                    if notches != 0.0 {
+                        let zoom = timeline.vertical_zoom(track_id) + notches.round() * VERTICAL_ZOOM_STEP;
+                        timeline.set_vertical_zoom(track_id, zoom);
+                    }
+                }
             });
         });
     }

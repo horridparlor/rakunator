@@ -132,6 +132,14 @@ impl TimelineState {
         self.click_snap_flash.is_some_and(|(_, at)| at.elapsed() < CLICK_SNAP_FLASH)
     }
 
+    /// Flashes the same yellow alignment line a click-snap does, at
+    /// `sample` — for feedback outside this module, e.g. Left/Right
+    /// nudging a selected clip up against another clip's edge instead of
+    /// stepping past it (see `handle_shortcuts` in `app.rs`).
+    pub fn flash_snap(&mut self, sample: u64) {
+        self.click_snap_flash = Some((sample, std::time::Instant::now()));
+    }
+
     /// Clears the snap indicator; call once per frame before drawing any
     /// lanes, since at most one lane (whichever holds the dragged clip)
     /// will set it again that same frame.
@@ -243,8 +251,8 @@ pub fn draw_ruler(
                 );
                 let secs = sample as f32 / sample_rate_hz as f32;
                 ui.painter().text(
-                    egui::pos2(x + 2.0, rect.top()),
-                    egui::Align2::LEFT_TOP,
+                    egui::pos2(x, rect.top()),
+                    egui::Align2::CENTER_TOP,
                     format_time(secs),
                     egui::FontId::proportional(10.0),
                     ui.visuals().text_color(),
@@ -647,15 +655,24 @@ pub fn draw_lane(
         // Cursor feedback for edge-trimming: a "grab" hand as soon as the
         // pointer is close enough to an edge that a drag-start there would
         // trim instead of move, switching to "grabbing" for the duration of
-        // that trim drag once it's actually underway.
+        // that trim drag once it's actually underway. `hovered_edge_sample`
+        // flags that same proximity visually via the shared snap-indicator
+        // flash (set below, after `draw_clip_rect`) — otherwise the only
+        // feedback a trim is possible there is the cursor shape, easy to
+        // miss.
+        let mut hovered_edge_sample: Option<u64> = None;
         if being_dragged {
             if matches!(state.drag.as_ref().map(|d| d.mode), Some(DragMode::TrimStart) | Some(DragMode::TrimEnd)) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             }
-        } else if let Some(pointer_x) = response.hover_pos().map(|p| p.x)
-            && ((pointer_x - x).abs() <= EDGE_GRAB_PX || (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX)
-        {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        } else if let Some(pointer_x) = response.hover_pos().map(|p| p.x) {
+            let near_start = (pointer_x - x).abs() <= EDGE_GRAB_PX;
+            let near_end = (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX;
+            if near_start || near_end {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                hovered_edge_sample =
+                    Some(if near_start { clip.start_sample } else { clip.start_sample + clip.len_samples });
+            }
         }
 
         if response.drag_started() {
@@ -826,6 +843,14 @@ pub fn draw_lane(
             selected,
             state.vertical_zoom(track_id),
         );
+
+        if let Some(sample) = hovered_edge_sample {
+            // Reuse the same full-height snap-indicator flash a live
+            // drag/trim snap or a keyboard-nudge dock draws, so hovering a
+            // grabbable edge reads as the identical "clipping" feedback
+            // used everywhere else in the timeline.
+            state.snap_indicator = Some(sample);
+        }
 
         let mut menu_action: Option<ClipMenuAction> = None;
         response.context_menu(|ui| {

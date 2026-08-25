@@ -78,21 +78,8 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         }
     });
 
-    // "Save as..." saves immediately once a location is picked — the
-    // native dialog already asks to confirm overwriting an existing file
-    // itself, so there's no need for our own `draw_overwrite_confirm` on
-    // top of it the way the typed-path "Save" button goes through below.
     if browse_save {
-        let starting_dir = PathBuf::from(&app.project_file_dialog.path_text);
-        let dialog = rfd::FileDialog::new().add_filter("Rakunator Project", &["raku"]);
-        let dialog = match starting_dir.parent() {
-            Some(dir) => dialog.set_directory(dir),
-            None => dialog,
-        };
-        if let Some(path) = dialog.save_file() {
-            app.project_file_dialog.path_text = path.display().to_string();
-            do_save(app, &path);
-        }
+        save_as(app);
     }
     // "Select..." loads immediately once a file is picked — there's no
     // separate "Load" button to press afterward.
@@ -171,6 +158,24 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
 pub fn save_current(app: &mut RakunatorApp) {
     let path = PathBuf::from(&app.project_file_dialog.path_text);
     do_save(app, &path);
+}
+
+/// Opens a native "Save As" file picker and saves there once a location is
+/// chosen — for the "Save as..." button and the Ctrl+Shift+S shortcut.
+/// Skips our own overwrite-confirmation popup (unlike the typed-path
+/// "Save" button): the native dialog already asks to confirm overwriting
+/// an existing file itself.
+pub fn save_as(app: &mut RakunatorApp) {
+    let starting_dir = PathBuf::from(&app.project_file_dialog.path_text);
+    let dialog = rfd::FileDialog::new().add_filter("Rakunator Project", &["raku"]);
+    let dialog = match starting_dir.parent() {
+        Some(dir) => dialog.set_directory(dir),
+        None => dialog,
+    };
+    if let Some(path) = dialog.save_file() {
+        app.project_file_dialog.path_text = path.display().to_string();
+        do_save(app, &path);
+    }
 }
 
 /// Loads `path` as the project, replacing whatever's currently open, and

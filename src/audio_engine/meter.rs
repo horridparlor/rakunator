@@ -42,6 +42,16 @@ impl Meters {
         self.peak_r[i].store(0, Ordering::Relaxed);
     }
 
+    /// Resets every track's meter — for pausing/stopping playback, since
+    /// the producer thread that normally decays them towards zero (see
+    /// `update`) idles while stopped, otherwise leaving every meter frozen
+    /// at whatever it last read while playing.
+    pub fn reset_all(&self) {
+        for i in 0..MAX_TRACKS {
+            self.reset(i);
+        }
+    }
+
     pub fn read(&self, i: usize) -> (f32, f32) {
         if i >= MAX_TRACKS {
             return (0.0, 0.0);
