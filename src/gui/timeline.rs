@@ -66,9 +66,10 @@ pub struct TimelineState {
     /// Where a Shift+drag marquee selection started, in screen space.
     marquee_anchor: Option<egui::Pos2>,
     /// Sample position of the clip edge a move/trim is currently snapped
-    /// to, if any — drawn as a yellow alignment line. Reset every frame
-    /// (by the caller) and set at most once, by whichever lane is drawing
-    /// the clip currently being dragged.
+    /// to, or that the pointer is merely hovering close enough to grab, if
+    /// any — drawn as a yellow alignment line. Reset every frame (by the
+    /// caller) and set at most once, by whichever lane is drawing the
+    /// relevant clip.
     snap_indicator: Option<u64>,
     /// Where a plain click on the ruler or a lane snapped the playhead to a
     /// nearby clip edge, and when — drawn as the same yellow alignment line

@@ -702,9 +702,30 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         // a clip that isn't there.
         if nudge_left || nudge_right {
             let nudge = nudge_samples(app);
+            let current_pos = app.engine.position();
             let delta = if nudge_left { -nudge } else { nudge };
-            let new_pos = (app.engine.position() as i64 + delta).max(0) as u64;
+            let naive_new_pos = (current_pos as i64 + delta).max(0) as u64;
+            // Stop exactly at the nearest clip edge instead of stepping
+            // past it in one nudge, mirroring the selected-clip nudge
+            // below — otherwise a step bigger than the remaining distance
+            // silently skips over a clip boundary instead of docking
+            // against it.
+            let edges: Vec<u64> = project
+                .tracks
+                .iter()
+                .flat_map(|t| &t.clips)
+                .flat_map(|c| [c.start_sample, c.end_sample()])
+                .collect();
+            let blocking_edge = if nudge_right {
+                edges.iter().copied().filter(|&e| e > current_pos && e <= naive_new_pos).min()
+            } else {
+                edges.iter().copied().filter(|&e| e < current_pos && e >= naive_new_pos).max()
+            };
+            let new_pos = blocking_edge.unwrap_or(naive_new_pos);
             app.engine.seek(new_pos);
+            if let Some(edge) = blocking_edge {
+                app.timeline.flash_snap(edge);
+            }
         } else if jump_start {
             app.engine.seek(0);
         } else if jump_end {
