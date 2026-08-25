@@ -488,6 +488,44 @@ impl Project {
         }
     }
 
+    /// Which track a fresh recording should land on, if any existing one is
+    /// a clear fit — checked in priority order:
+    /// 1. The single selected track (clicking a track header's background).
+    /// 2. The track owning the current clip selection, if that selection is
+    ///    all on one track.
+    /// 3. `last_click_track` — the track most recently clicked in the
+    ///    timeline, including a plain click on empty lane space that just
+    ///    repositions the playhead (see `TimelineState::last_click`) and
+    ///    doesn't set either selection above — this is how most people
+    ///    actually "pick" a track to record onto.
+    /// 4. With none of those available, the last track, if it's empty.
+    ///
+    /// `None` means the caller should create a fresh track instead
+    /// (multiple tracks/clips selected across tracks, or nothing to go on
+    /// and the last track already has clips on it).
+    pub fn recording_target_track(&self, last_click_track: Option<TrackId>) -> Option<TrackId> {
+        let mut selected_tracks = self.selected_tracks.iter();
+        match (selected_tracks.next(), selected_tracks.next()) {
+            (Some(&id), None) => return Some(id),
+            (Some(_), Some(_)) => return None,
+            _ => {}
+        }
+
+        if !self.selection.is_empty() {
+            let mut clip_tracks = self.selection.iter().filter_map(|&id| self.find_clip_track(id));
+            return match clip_tracks.next() {
+                Some(first) if clip_tracks.all(|t| t == first) => Some(first),
+                _ => None,
+            };
+        }
+
+        if let Some(id) = last_click_track.filter(|id| self.track(*id).is_some()) {
+            return Some(id);
+        }
+
+        self.tracks.last().filter(|t| t.clips.is_empty()).map(|t| t.id)
+    }
+
     /// Finds which track currently owns `clip_id`, if any.
     pub fn find_clip_track(&self, clip_id: ClipId) -> Option<TrackId> {
         self.tracks

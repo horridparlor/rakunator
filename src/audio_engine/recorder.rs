@@ -128,6 +128,17 @@ impl Recorder {
         buffer[start..].to_vec()
     }
 
+    /// Every sample captured from index `from` (into the interleaved
+    /// capture buffer) onward, plus the buffer's current total length —
+    /// lets a caller accumulate a live waveform incrementally, frame by
+    /// frame, without re-copying already-read samples each time the way
+    /// `recent_samples` would.
+    pub fn samples_since(&self, from: usize) -> (Vec<f32>, usize) {
+        let buffer = self.buffer.lock().unwrap();
+        let from = from.min(buffer.len());
+        (buffer[from..].to_vec(), buffer.len())
+    }
+
     /// Stops capturing and returns every sample recorded, interleaved at
     /// `self.channels` channels and `self.sample_rate_hz`.
     pub fn stop(self) -> Vec<f32> {

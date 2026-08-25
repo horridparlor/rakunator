@@ -1,11 +1,12 @@
 mod app;
 mod export_dialog;
 mod help_dialog;
+pub mod icon;
 mod meter_widget;
 mod project_file_dialog;
-mod record_monitor;
 mod settings_persistence;
 mod timeline;
+mod toast;
 mod toolbar;
 mod track_view;
 mod wave_dialog;

@@ -1,5 +1,6 @@
 fn main() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
+    options.viewport = options.viewport.with_icon(rakunator::gui::icon::app_icon());
 
     // winit's Wayland backend doesn't emit DroppedFile/HoveredFile events
     // (only X11, macOS and Windows do), so dragging a .wav from the file

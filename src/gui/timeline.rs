@@ -21,6 +21,31 @@ const EDGE_GRAB_PX: f32 = 12.0;
 /// How close (in pixels) a moved/trimmed edge has to land to another
 /// clip's edge (anywhere in the project) to snap to it.
 const SNAP_PX: f32 = 8.0;
+/// How much room to keep between a live recording's growing edge and the
+/// right side of its lane before auto-scrolling forward to follow it.
+const FOLLOW_MARGIN_PX: f32 = 60.0;
+/// Height of the hazard-striped band flagging a stretch of a lane where
+/// two or more clips overlap in time.
+const OVERLAP_INDICATOR_HEIGHT: f32 = 5.0;
+/// How long the yellow alignment line stays visible after a click on the
+/// ruler/a lane snaps the playhead to a nearby clip edge — long enough to
+/// register as feedback for what would otherwise be a one-frame flash.
+const CLICK_SNAP_FLASH: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// A capture in progress, drawn directly on its target track's lane in
+/// place of the real clip — which only gets created once recording stops
+/// (see `RakunatorApp::stop_recording`). `samples` is a mono downmix of
+/// everything captured so far; the lane draws it spanning from
+/// `start_sample` up to the current playhead and keeps that growing edge
+/// in view (see `FOLLOW_MARGIN_PX`) instead of showing the whole take at
+/// once, which would squeeze tighter and tighter as it grows.
+pub struct LiveRecording<'a> {
+    pub start_sample: u64,
+    pub samples: &'a [f32],
+    /// Flags a hot/clipping input the same way the old standalone monitor
+    /// strip's color did.
+    pub color: Color32,
+}
 
 pub struct TimelineState {
     pub px_per_sample: f32,
@@ -41,6 +66,11 @@ pub struct TimelineState {
     /// (by the caller) and set at most once, by whichever lane is drawing
     /// the clip currently being dragged.
     snap_indicator: Option<u64>,
+    /// Where a plain click on the ruler or a lane snapped the playhead to a
+    /// nearby clip edge, and when — drawn as the same yellow alignment line
+    /// as `snap_indicator` for a moment afterward (see `CLICK_SNAP_FLASH`),
+    /// since a discrete click has no "while dragging" span to draw it over.
+    click_snap_flash: Option<(u64, std::time::Instant)>,
     drag: Option<DragState>,
     /// Per-track waveform vertical (amplitude) zoom, set by Shift+scrolling
     /// over a track's lane. Missing entries default to 1.0 (unzoomed).
@@ -57,6 +87,7 @@ impl Default for TimelineState {
             lane_left_x: None,
             marquee_anchor: None,
             snap_indicator: None,
+            click_snap_flash: None,
             drag: None,
             vertical_zoom: HashMap::new(),
         }
@@ -79,9 +110,22 @@ impl TimelineState {
     }
 
     /// The sample position of the clip edge a move/trim is currently
-    /// snapped to, if any — for drawing the yellow alignment line.
+    /// snapped to, or — for a moment after a click snapped the playhead to
+    /// one instead (see `CLICK_SNAP_FLASH`) — that click's target, for
+    /// drawing the yellow alignment line either way.
     pub fn snap_indicator(&self) -> Option<u64> {
-        self.snap_indicator
+        self.snap_indicator.or_else(|| {
+            self.click_snap_flash
+                .filter(|(_, at)| at.elapsed() < CLICK_SNAP_FLASH)
+                .map(|(sample, _)| sample)
+        })
+    }
+
+    /// Whether a click-snap flash is still fading, so the caller knows to
+    /// keep requesting repaints until it's done (unlike `snap_indicator`,
+    /// which is recomputed every frame anyway while a drag is live).
+    pub fn click_snap_flash_active(&self) -> bool {
+        self.click_snap_flash.is_some_and(|(_, at)| at.elapsed() < CLICK_SNAP_FLASH)
     }
 
     /// Clears the snap indicator; call once per frame before drawing any
@@ -146,6 +190,7 @@ pub fn draw_ruler(
     playhead_sample: u64,
     sample_rate_hz: u32,
     engine: &AudioEngine,
+    snap_targets: &[u64],
 ) {
     let size = Vec2::new(ui.available_width().max(200.0), RULER_HEIGHT);
     let (mut rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -162,7 +207,8 @@ pub fn draw_ruler(
 
     if response.clicked()
         && let Some(pos) = response.interact_pointer_pos() {
-            let sample = sample_for_x(pos.x, rect, state);
+            let raw_sample = sample_for_x(pos.x, rect, state);
+            let sample = snap_click(state, raw_sample, snap_targets);
             engine.seek(sample);
         }
 
@@ -307,6 +353,18 @@ fn snap_sample(candidate: i64, targets: &[u64], px_per_sample: f32) -> i64 {
         .unwrap_or(candidate)
 }
 
+/// Snaps a plain click's seek target to the nearest clip edge, Audacity-
+/// style — same snapping `snap_sample` already does for moving/trimming a
+/// clip, just for a single point instead of a range. Flags `state`'s
+/// click-snap indicator when it actually moved the click.
+fn snap_click(state: &mut TimelineState, raw_sample: u64, targets: &[u64]) -> u64 {
+    let snapped = snap_sample(raw_sample as i64, targets, state.px_per_sample).max(0) as u64;
+    if snapped != raw_sample {
+        state.click_snap_flash = Some((snapped, std::time::Instant::now()));
+    }
+    snapped
+}
+
 /// Snaps a moving clip's new start position, trying its leading edge
 /// first and its trailing edge second (whichever lands on a snap target).
 fn snap_move_start(new_start: i64, len_samples: i64, targets: &[u64], px_per_sample: f32) -> i64 {
@@ -427,6 +485,7 @@ pub fn draw_lane(
     state: &mut TimelineState,
     playhead_sample: u64,
     engine: &AudioEngine,
+    live_recording: Option<&LiveRecording>,
 ) {
     let size = Vec2::new(ui.available_width().max(200.0), ROW_HEIGHT);
     let (rect, lane_response) = ui.allocate_exact_size(size, Sense::click_and_drag());
@@ -453,6 +512,19 @@ pub fn draw_lane(
     handle_zoom_and_pan(ui, hovered, rect, state, false);
     handle_vertical_zoom(ui, hovered, state, track_id);
 
+    // While a capture is landing on this lane, keep its growing edge just
+    // inside view instead of letting it scroll off-screen, or rescaling to
+    // fit the whole take (which would make it look like it keeps squeezing
+    // tighter as it grows) — nudge the scroll forward exactly enough to
+    // hold the edge at `FOLLOW_MARGIN_PX` from the lane's right side.
+    if live_recording.is_some() {
+        let edge_x = rect.left() + (playhead_sample as f32 - state.scroll_x_samples) * state.px_per_sample;
+        let target_edge_x = rect.right() - FOLLOW_MARGIN_PX;
+        if edge_x > target_edge_x {
+            state.scroll_x_samples += (edge_x - target_edge_x) / state.px_per_sample;
+        }
+    }
+
     let px_per_sample = state.px_per_sample;
     let scroll = state.scroll_x_samples;
     let x_for = |sample: u64| rect.left() + (sample as f32 - scroll) * px_per_sample;
@@ -462,7 +534,8 @@ pub fn draw_lane(
     if lane_response.clicked()
         && let Some(pos) = lane_response.interact_pointer_pos()
     {
-        let sample = sample_for_x(pos.x);
+        let raw_sample = sample_for_x(pos.x);
+        let sample = snap_click(state, raw_sample, snap_targets);
         state.last_click = Some((track_id, sample));
         project.selection.clear();
         project.selected_tracks.clear();
@@ -603,7 +676,8 @@ pub fn draw_lane(
                 // Bottom half of a clip acts like clicking the lane behind
                 // it: move the playhead there instead of selecting the clip.
                 let pointer_x = response.interact_pointer_pos().map(|p| p.x).unwrap_or(x);
-                let sample = sample_for_x(pointer_x);
+                let raw_sample = sample_for_x(pointer_x);
+                let sample = snap_click(state, raw_sample, snap_targets);
                 state.last_click = Some((track_id, sample));
                 project.selection.clear();
                 project.selected_tracks.clear();
@@ -794,6 +868,47 @@ pub fn draw_lane(
         }
     }
 
+    // The live capture in progress on this lane, if any: spans from where
+    // recording started up to the current playhead, clipped to the visible
+    // part of the lane so drawing cost stays bounded by screen width rather
+    // than growing with the length of the take.
+    if let Some(live) = live_recording {
+        let full_len_samples = playhead_sample.saturating_sub(live.start_sample) as f32;
+        let full_x = x_for(live.start_sample);
+        let full_w = (full_len_samples * px_per_sample).max(1.0);
+        let full_rect = Rect::from_min_size(egui::pos2(full_x, rect.top() + 4.0), Vec2::new(full_w, ROW_HEIGHT - 8.0));
+        let draw_rect = Rect::from_min_max(
+            egui::pos2(full_rect.left().max(rect.left()), full_rect.top()),
+            egui::pos2(full_rect.right().min(rect.right()), full_rect.bottom()),
+        );
+        if draw_rect.width() > 0.0 {
+            let painter = ui.painter();
+            painter.rect_filled(draw_rect, CornerRadius::from(4.0), Color32::from_rgb(38, 40, 46));
+            let samples_per_px = live.samples.len() as f32 / full_w;
+            let start_idx = ((draw_rect.left() - full_rect.left()) * samples_per_px).max(0.0) as usize;
+            let end_idx =
+                (((draw_rect.right() - full_rect.left()) * samples_per_px).ceil() as usize).min(live.samples.len());
+            if start_idx < end_idx {
+                draw_waveform(
+                    painter,
+                    draw_rect,
+                    &live.samples[start_idx..end_idx],
+                    live.color,
+                    state.vertical_zoom(track_id),
+                );
+            }
+            painter.rect_stroke(draw_rect, CornerRadius::from(4.0), Stroke::new(1.0, live.color), StrokeKind::Middle);
+            let label_left = full_rect.left().max(rect.left()).min(draw_rect.right());
+            painter.text(
+                egui::pos2(label_left, draw_rect.top()) + Vec2::new(4.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                "Recording\u{2026}",
+                egui::FontId::default(),
+                Color32::from_rgb(235, 235, 240),
+            );
+        }
+    }
+
     // Ghost preview of a moved (or cross-track duplicated) clip while it's
     // hovering over this lane.
     if let Some(drag) = &state.drag
@@ -829,6 +944,20 @@ pub fn draw_lane(
             Stroke::new(1.5, Color32::from_rgb(120, 170, 255)),
             StrokeKind::Middle,
         );
+    }
+
+    // Flag any stretch of this lane where two or more clips' time ranges
+    // overlap (most commonly after a recording lands on top of existing
+    // material) with a hazard-striped band along the top — one clip simply
+    // painting over another otherwise leaves no clue anything's hidden
+    // underneath.
+    for (start, end) in overlapping_ranges(&clips) {
+        let x0 = x_for(start).max(rect.left());
+        let x1 = x_for(end).min(rect.right());
+        if x1 > x0 {
+            let strip = Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.top() + OVERLAP_INDICATOR_HEIGHT));
+            draw_hazard_stripes(ui.painter(), strip);
+        }
     }
 
     let playhead_x = x_for(playhead_sample);
@@ -915,6 +1044,54 @@ fn draw_clip_rect(
         egui::FontId::default(),
         text_color,
     );
+}
+
+/// Merges `clips`' `[start_sample, start_sample + len_samples)` ranges and
+/// returns every sub-range covered by two or more of them at once (clips
+/// that merely touch end-to-end don't count) — used to flag overlapping
+/// material on a lane.
+fn overlapping_ranges(clips: &[ClipSnapshot]) -> Vec<(u64, u64)> {
+    let mut events: Vec<(u64, i32)> = Vec::with_capacity(clips.len() * 2);
+    for clip in clips {
+        events.push((clip.start_sample, 1));
+        events.push((clip.start_sample + clip.len_samples, -1));
+    }
+    // At equal positions, process an end (-1) before a start (+1) so two
+    // clips sharing an exact edge don't briefly register as overlapping.
+    events.sort_by_key(|&(pos, delta)| (pos, delta));
+
+    let mut depth = 0i32;
+    let mut region_start = None;
+    let mut ranges = Vec::new();
+    for (pos, delta) in events {
+        let prev_depth = depth;
+        depth += delta;
+        if prev_depth < 2 && depth >= 2 {
+            region_start = Some(pos);
+        } else if prev_depth >= 2 && depth < 2
+            && let Some(start) = region_start.take()
+        {
+            ranges.push((start, pos));
+        }
+    }
+    ranges
+}
+
+/// Diagonal amber/black hazard stripes across `rect`, clipped to whatever
+/// clip rect is currently set (so the diagonal overshoot past either edge
+/// needs no manual bounding).
+fn draw_hazard_stripes(painter: &egui::Painter, rect: Rect) {
+    const STRIPE_PERIOD: f32 = 10.0;
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(46, 36, 12));
+    let span = rect.height();
+    let mut x = rect.left() - span;
+    while x < rect.right() + span {
+        painter.line_segment(
+            [egui::pos2(x, rect.bottom()), egui::pos2(x + span, rect.top())],
+            Stroke::new(3.0, Color32::from_rgb(230, 170, 40)),
+        );
+        x += STRIPE_PERIOD;
+    }
 }
 
 /// Draws a min/max envelope of `samples` across `rect`: one vertical line

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use super::{
     export_dialog, export_dialog::ExportDialogState, help_dialog, project_file_dialog,
-    project_file_dialog::ProjectFileDialogState, record_monitor, settings_persistence, timeline,
-    timeline::TimelineState, toolbar, toolbar::EffectsState, track_view, wave_dialog,
+    project_file_dialog::ProjectFileDialogState, settings_persistence, timeline,
+    timeline::TimelineState, toast, toolbar, toolbar::EffectsState, track_view, wave_dialog,
     wave_dialog::WaveDialogState, HEADER_WIDTH, ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP,
     TRACK_ROW_STEP,
 };
@@ -33,24 +33,43 @@ pub struct RakunatorApp {
     pub(super) project_name: Option<String>,
     /// The in-progress microphone capture, if the Record button is active.
     /// Its presence locks the rest of the UI (see `ui`) so edits can't race
-    /// with the new track/clip that appears once recording stops.
+    /// with the clip that's growing live on `record_target_track`.
     pub(super) recording: Option<Recorder>,
     /// When the current recording started, for the toolbar's elapsed-time
     /// readout.
     pub(super) record_started_at: Option<std::time::Instant>,
-    /// Where the playhead was sitting when recording started, so the
-    /// captured audio gets baked into a clip starting there instead of at
-    /// the very beginning of the timeline, and so the playhead can return
-    /// there once recording stops.
+    /// Where the playhead was sitting when recording started — the live
+    /// clip grows from here up to the current playhead, the real clip gets
+    /// baked in starting here once recording stops, and the playhead
+    /// returns here at that point too.
     pub(super) record_start_sample: Option<u64>,
-    /// The single track that was selected when recording started, if any —
-    /// the captured audio is added as a new clip on that track instead of
-    /// a freshly created one.
+    /// The track the live recording is landing on: the single track that
+    /// was selected when recording started, or a freshly created one —
+    /// decided (and, if new, created) in `start_recording`, so the track
+    /// already exists in place from the very first frame of the capture.
     pub(super) record_target_track: Option<TrackId>,
-    /// When the input last clipped, so the live recording monitor's
-    /// "CLIPPING" warning stays visible for a moment instead of flashing
-    /// for a single frame.
+    /// The timeline's horizontal scroll position when recording started —
+    /// restored once recording stops, since the view auto-follows the live
+    /// capture as it grows (see `timeline::draw_lane`) and would otherwise
+    /// end up wherever that follow scroll last left it.
+    pub(super) record_scroll_start: Option<f32>,
+    /// Mono downmix of everything captured so far this take, accumulated
+    /// frame by frame from `Recorder::samples_since` (see `ui`) and drawn
+    /// live on `record_target_track`'s lane in place of the real clip,
+    /// which only gets created once recording stops.
+    pub(super) record_preview_samples: Vec<f32>,
+    /// How many raw (device-native, interleaved) samples of the current
+    /// take have already been folded into `record_preview_samples`, so each
+    /// frame only downmixes what's new instead of re-copying the whole take.
+    pub(super) record_preview_read_len: usize,
+    /// When the input last clipped, so the live recording waveform's hot
+    /// color stays visible for a moment instead of flashing for a single
+    /// frame.
     pub(super) record_clip_flash: Option<std::time::Instant>,
+    /// A brief confirmation message (e.g. "Project saved") and when it was
+    /// shown, faded out and cleared by `toast::draw` a couple of seconds
+    /// later.
+    pub(super) toast: Option<(String, std::time::Instant)>,
 }
 
 impl RakunatorApp {
@@ -82,7 +101,11 @@ impl RakunatorApp {
             record_started_at: None,
             record_start_sample: None,
             record_target_track: None,
+            record_scroll_start: None,
+            record_preview_samples: Vec::new(),
+            record_preview_read_len: 0,
             record_clip_flash: None,
+            toast: None,
         }
     }
 
@@ -105,10 +128,13 @@ impl RakunatorApp {
     /// Opens the default microphone and starts capturing, from wherever the
     /// playhead currently sits. Also starts playback, so the timeline
     /// scrolls and existing tracks are audible as a click/backing reference
-    /// while recording. If exactly one track is selected, the capture lands
-    /// as a new clip on that track once it stops; otherwise it lands on a
-    /// freshly created track. Does nothing if already recording, or if
-    /// there's no input device available.
+    /// while recording. Lands on an existing track when one is a clear fit
+    /// (see `Project::recording_target_track` — the selected track, the
+    /// clip selection's track, or the track last clicked in the timeline);
+    /// otherwise a new track is created immediately, so there's somewhere
+    /// for the live waveform to grow in place from the first frame. Does
+    /// nothing if already recording, or if there's no input device
+    /// available.
     pub(super) fn start_recording(&mut self) {
         if self.recording.is_some() {
             return;
@@ -118,14 +144,25 @@ impl RakunatorApp {
                 self.recording = Some(recorder);
                 self.record_started_at = Some(std::time::Instant::now());
                 self.record_start_sample = Some(self.engine.position());
-                self.record_target_track = {
-                    let project = self.project.lock().unwrap();
-                    let mut selected = project.selected_tracks.iter();
-                    match (selected.next(), selected.next()) {
-                        (Some(&id), None) => Some(id),
-                        _ => None,
+                self.record_scroll_start = Some(self.timeline.scroll_x_samples);
+                self.record_preview_samples.clear();
+                self.record_preview_read_len = 0;
+
+                let last_click_track = self.timeline.last_click.map(|(track, _)| track);
+                let mut project = self.project.lock().unwrap();
+                self.record_target_track = Some(match project.recording_target_track(last_click_track) {
+                    Some(id) => id,
+                    None => {
+                        let name = format!("Recording {}", project.tracks.len() + 1);
+                        let id = project.add_track();
+                        if let Some(track) = project.track_mut(id) {
+                            track.name = name;
+                        }
+                        id
                     }
-                };
+                });
+                drop(project);
+
                 self.start_playback();
             }
             None => eprintln!("recording failed: no microphone/input device available"),
@@ -134,16 +171,21 @@ impl RakunatorApp {
 
     /// Stops capturing and playback, returns the playhead to where
     /// recording started, and bakes whatever was recorded into a clip at
-    /// that position — on the track selected when recording started if
-    /// there was exactly one, otherwise a fresh track — converted to the
-    /// project's sample rate and channel layout (see `to_project_format`).
-    /// Does nothing if not currently recording.
+    /// that position on `record_target_track` (created up front in
+    /// `start_recording`), converted to the project's sample rate and
+    /// channel layout (see `to_project_format`). Does nothing if not
+    /// currently recording.
     pub(super) fn stop_recording(&mut self) {
         let Some(recorder) = self.recording.take() else {
             return;
         };
         self.record_started_at = None;
         self.record_clip_flash = None;
+        self.record_preview_samples.clear();
+        self.record_preview_read_len = 0;
+        if let Some(scroll) = self.record_scroll_start.take() {
+            self.timeline.scroll_x_samples = scroll;
+        }
         let start_sample = self.record_start_sample.take().unwrap_or(0);
         let target_track = self.record_target_track.take();
         self.engine.pause();
@@ -162,16 +204,9 @@ impl RakunatorApp {
             return;
         }
 
-        let target = target_track
-            .filter(|id| project.track(*id).is_some())
-            .unwrap_or_else(|| {
-                let name = format!("Recording {}", project.tracks.len() + 1);
-                let id = project.add_track();
-                if let Some(track) = project.track_mut(id) {
-                    track.name = name;
-                }
-                id
-            });
+        let Some(target) = target_track.filter(|id| project.track(*id).is_some()) else {
+            return;
+        };
         let clip_index = project.track(target).map_or(0, |t| t.clips.len());
         let name = format!("Recording {}", clip_index + 1);
         project.add_clip_channels(target, name, start_sample, samples, out_channels);
@@ -237,6 +272,12 @@ impl eframe::App for RakunatorApp {
                 toolbar::draw(ui, self);
             });
 
+        // Colors the live recording waveform drawn on its track's lane
+        // below, the same way the old standalone monitor strip's color did:
+        // normal accent blue, amber once it's hot, red once it's actually
+        // clipped (latched for a moment past the last clipped sample so a
+        // single hot sample doesn't just flash past in one frame).
+        let mut record_color = egui::Color32::from_rgb(120, 170, 255);
         if let Some(recorder) = self.recording.as_ref() {
             if recorder.take_clipped() {
                 self.record_clip_flash = Some(std::time::Instant::now());
@@ -244,16 +285,28 @@ impl eframe::App for RakunatorApp {
             let clipping_recently = self
                 .record_clip_flash
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(1200));
-            egui::Panel::top("record_monitor")
-                .frame(egui::Frame::default().inner_margin(egui::Margin {
-                    left: 8,
-                    right: 8,
-                    top: 0,
-                    bottom: 6,
-                }))
-                .show(ui, |ui| {
-                    record_monitor::draw(ui, recorder, clipping_recently);
-                });
+            record_color = if clipping_recently {
+                egui::Color32::from_rgb(220, 60, 60)
+            } else if recorder.peak_level() > 0.85 {
+                egui::Color32::from_rgb(230, 200, 60)
+            } else {
+                record_color
+            };
+
+            // Fold whatever's been captured since the last frame into the
+            // running mono preview, only consuming whole frames (`channels`
+            // samples at a time) so a partial trailing frame is picked back
+            // up next time instead of permanently shifting the channel
+            // alignment of everything downmixed after it.
+            let (new_raw, total) = recorder.samples_since(self.record_preview_read_len);
+            let channels = recorder.channels.max(1);
+            let usable = (new_raw.len() / channels) * channels;
+            self.record_preview_samples.extend(
+                new_raw[..usable]
+                    .chunks_exact(channels)
+                    .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+            );
+            self.record_preview_read_len = total - (new_raw.len() - usable);
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -263,34 +316,47 @@ impl eframe::App for RakunatorApp {
                 let timeline_state = &mut self.timeline;
                 let sample_rate_hz = self.sample_rate_hz;
                 let playhead = engine.position();
+                let record_target_track = self.record_target_track;
+                let record_start_sample = self.record_start_sample.unwrap_or(0);
+                let record_preview_samples = &self.record_preview_samples;
+
+                // Every clip edge in the project, used by the timeline's
+                // move/trim snapping (and click-to-seek snapping — see
+                // `timeline::snap_click`) so clips can align to each
+                // other's start/end points across tracks. Computed once up
+                // front, ahead of the ruler, so both it and the lanes below
+                // share the same snapshot.
+                let snap_targets: Vec<u64> = {
+                    let project = project.lock().unwrap();
+                    project
+                        .tracks
+                        .iter()
+                        .flat_map(|t| &t.clips)
+                        .flat_map(|c| [c.start_sample, c.end_sample()])
+                        .collect()
+                };
+                let content_end_sample = snap_targets.iter().copied().max().unwrap_or(0);
 
                 ui.horizontal(|ui| {
                     ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, RULER_HEIGHT), |_ui| {});
-                    timeline::draw_ruler(ui, timeline_state, playhead, sample_rate_hz, engine);
+                    timeline::draw_ruler(ui, timeline_state, playhead, sample_rate_hz, engine, &snap_targets);
                 });
 
                 timeline_state.clear_snap_indicator();
                 let mut track_count = 0usize;
-                let mut content_end_sample = 0u64;
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut project = project.lock().unwrap();
                     timeline_state.tracks_top_y = ui.cursor().top();
 
-                    // Every clip edge in the project, used by the timeline's
-                    // move/trim snapping so clips can align to each other's
-                    // start/end points across tracks.
-                    let snap_targets: Vec<u64> = project
-                        .tracks
-                        .iter()
-                        .flat_map(|t| &t.clips)
-                        .flat_map(|c| [c.start_sample, c.end_sample()])
-                        .collect();
-                    content_end_sample = snap_targets.iter().copied().max().unwrap_or(0);
-
                     let track_ids: Vec<_> = project.tracks.iter().map(|t| t.id).collect();
                     track_count = track_ids.len();
                     for track_id in &track_ids {
+                        let live_recording = (record_target_track == Some(*track_id)).then_some(timeline::LiveRecording {
+                            start_sample: record_start_sample,
+                            samples: record_preview_samples.as_slice(),
+                            color: record_color,
+                        });
                         ui.horizontal(|ui| {
                             ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, ROW_HEIGHT), |ui| {
                                 track_view::draw_header(ui, &mut project, *track_id, engine);
@@ -304,6 +370,7 @@ impl eframe::App for RakunatorApp {
                                 timeline_state,
                                 playhead,
                                 engine,
+                                live_recording.as_ref(),
                             );
                         });
                         draw_row_gap(ui);
@@ -320,15 +387,22 @@ impl eframe::App for RakunatorApp {
             });
         });
 
+        let mut project_dialog_pending_close = false;
         if !recording {
             wave_dialog::draw(ui.ctx(), self);
             export_dialog::draw(ui.ctx(), self);
-            project_file_dialog::draw(ui.ctx(), self);
+            project_dialog_pending_close = project_file_dialog::draw(ui.ctx(), self);
             toolbar::draw_effects_settings_dialog(ui.ctx(), self);
         }
         help_dialog::draw(ui.ctx(), self);
+        let toast_active = toast::draw(ui.ctx(), self);
 
-        if self.engine.is_playing() || recording {
+        if self.engine.is_playing()
+            || recording
+            || toast_active
+            || project_dialog_pending_close
+            || self.timeline.click_snap_flash_active()
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
     }
@@ -437,7 +511,9 @@ fn nudge_samples(app: &RakunatorApp) -> i64 {
     ((NUDGE_PIXELS / app.timeline.px_per_sample).round() as i64).max(1)
 }
 
-/// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
+/// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s) — or, if
+/// one or more tracks are selected instead, Ctrl+D duplicates each of them
+/// directly below itself (see `Project::duplicate_track`); Ctrl+F /
 /// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
 /// adds a new track; Ctrl+M toggles the window between maximized and
 /// restored; Ctrl+Escape quits the application; Left/Right nudges the
@@ -535,6 +611,11 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         app.project.lock().unwrap().add_track();
     }
 
+    let save = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::S));
+    if save {
+        project_file_dialog::save_current(app);
+    }
+
     if repeat_effect {
         toolbar::repeat_last_effect(app);
     }
@@ -602,6 +683,14 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         let track_ids: Vec<TrackId> = project.selected_tracks.iter().copied().collect();
         for id in track_ids {
             project.remove_track(id);
+        }
+        return;
+    }
+
+    if duplicate && !project.selected_tracks.is_empty() {
+        let track_ids: Vec<TrackId> = project.selected_tracks.iter().copied().collect();
+        for id in track_ids {
+            project.duplicate_track(id);
         }
         return;
     }

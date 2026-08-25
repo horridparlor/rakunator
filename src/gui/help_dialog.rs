@@ -85,7 +85,10 @@ fn help_sections() -> &'static [HelpSection] {
                 ("F11", "Toggle fullscreen"),
                 ("Ctrl+M", "Toggle maximize/restore the window"),
                 ("Ctrl+Escape", "Quit the application"),
-                ("Click the ruler / a track lane", "Seek the playhead there"),
+                (
+                    "Click the ruler / a track lane",
+                    "Seek the playhead there — snaps to a nearby clip edge if one's close (yellow flash), Audacity-style",
+                ),
                 ("Zoom In / Zoom Out (toolbar)", "Zoom the timeline"),
                 (
                     "Ctrl+Scroll / Alt+Scroll on the timeline",
@@ -109,11 +112,11 @@ fn help_sections() -> &'static [HelpSection] {
             rows: &[
                 (
                     "\u{25cf} (toolbar, next to Play) / \"R\"",
-                    "Capture the default microphone from wherever the playhead is, onto the selected track if exactly one is selected, otherwise a new track; click it again, or press R or Space, to stop (hover it to see elapsed time)",
+                    "Capture the default microphone from wherever the playhead is, landing on the selected track, the track the current clip selection is on, the track last clicked, or (with none of those) an empty last track — otherwise a new track; click it again, or press R or Space, to stop (hover it to see elapsed time)",
                 ),
                 (
                     "While recording",
-                    "Playback runs so you can hear/see existing tracks as you record; a live waveform strip below the toolbar shows the input level, turning red with a \"CLIPPING\" warning if it hits full scale; the rest of the UI is locked until you stop",
+                    "Playback runs so you can hear/see existing tracks as you record; the capture grows live on its own track's lane, turning amber then red if it hits full scale, and the timeline follows it as it grows; the rest of the UI is locked until you stop",
                 ),
                 ("Stopping a recording", "Playback stops and the playhead returns to where the recording started"),
             ],
@@ -148,7 +151,7 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Ctrl+J", "Join the selected clips (on the same track) into one"),
                 ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut / Copy / Paste the selected clip(s)"),
                 ("Delete / Backspace", "Delete the selected track(s), or the selected clip(s) if no track is selected"),
-                ("Ctrl+D", "Duplicate the selected clip(s) in place"),
+                ("Ctrl+D (with clip(s) selected)", "Duplicate the selected clip(s) in place"),
                 ("Right-click a clip", "Cut/Copy/Duplicate/Split/\"Duplicate to track\" menu"),
                 ("Ctrl+Z / Ctrl+Shift+Z", "Undo / Redo"),
             ],
@@ -250,6 +253,7 @@ fn help_sections() -> &'static [HelpSection] {
             rows: &[
                 ("Add Track (toolbar) / Ctrl+N", "Add a new empty track"),
                 ("Track \"...\" menu", "Move up/down/top/bottom/by N, duplicate, reset pan & volume, delete"),
+                ("Ctrl+D (with track(s) selected)", "Duplicate the selected track(s) — each copy lands directly below its original"),
                 ("Pan slider", "5% steps — left/right balance on stereo tracks, equal-power pan on mono tracks"),
                 ("Mute (M) / Solo (S)", "Standard mixing controls — soloing any track mutes all non-soloed ones"),
                 (
@@ -261,6 +265,10 @@ fn help_sections() -> &'static [HelpSection] {
                     "Track \"...\" menu \u{2192} Merge with track below",
                     "Combines this mono track with the mono track below it into one stereo track",
                 ),
+                (
+                    "Amber hazard stripe on a lane",
+                    "Two or more clips overlap in time there (e.g. after recording landed on top of existing material)",
+                ),
             ],
         },
         HelpSection {
@@ -269,6 +277,7 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Create Wave... (toolbar)", "Generate a sine/square/triangle/sawtooth clip, or import an audio file"),
                 ("Drag a .wav file onto the window", "Import it as a new track (stereo files import as a stereo track)"),
                 ("Project File... (toolbar)", "Save/Load a .raku project file, with a native file picker"),
+                ("Ctrl+S", "Save straight to the project's current file (or the default path, if it's never been saved)"),
                 ("Export Project... (toolbar)", "Render the full mixdown to .wav/.mp3 under a name you choose"),
             ],
         },
