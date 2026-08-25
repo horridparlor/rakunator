@@ -1050,6 +1050,14 @@ fn drag_value_scroll(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeI
         if notches != 0.0 {
             *value = (*value + notches.round() * step).clamp(*range.start(), *range.end());
         }
+        // `wheel_notches` only zeroes the scroll delta on frames where it
+        // saw a fresh wheel event; egui smooths scrolling over several
+        // frames afterward, and that leftover momentum would otherwise
+        // reach the "Edit Effect Steps" dialog's surrounding `ScrollArea`
+        // and scroll the whole dialog out from under the field being
+        // adjusted. Swallow it every frame this field is hovered, not just
+        // the frames with a fresh notch.
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
     }
 }
 
@@ -1064,6 +1072,10 @@ fn drag_value_scroll_u32(ui: &mut egui::Ui, value: &mut u32, range: std::ops::Ra
             let nudged = (*value as i64 + delta).clamp(*range.start() as i64, *range.end() as i64);
             *value = nudged as u32;
         }
+        // See the matching comment in `drag_value_scroll` — swallow any
+        // leftover scroll momentum every frame this field is hovered so it
+        // never bleeds through to the dialog's surrounding `ScrollArea`.
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
     }
 }
 
@@ -1081,7 +1093,13 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
     let mut ok = false;
     let mut cancel = false;
 
-    egui::Window::new("Edit Effect Steps").open(&mut open).default_width(520.0).max_height(600.0).show(ctx, |ui| {
+    egui::Window::new("Edit Effect Steps")
+        .open(&mut open)
+        .default_width(520.0)
+        .default_height(600.0)
+        .resizable(true)
+        .frame(super::window_frame(ctx, 1, 1, 1, 0))
+        .show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Search:");
             // Right-to-left so the Clear button claims its width first, and
@@ -1159,7 +1177,13 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
                 ],
             );
 
-        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+        // Leaves room below for the OK/Cancel/Reset row and its surrounding
+        // spacing (see further down) rather than a fixed constant, so
+        // dragging the window taller actually grows the scrollable list
+        // instead of just adding dead space under a size-capped `ScrollArea`.
+        const BOTTOM_CONTROLS_RESERVED_HEIGHT: f32 = 56.0;
+        let list_height = (ui.available_height() - BOTTOM_CONTROLS_RESERVED_HEIGHT).max(120.0);
+        egui::ScrollArea::vertical().max_height(list_height).show(ui, |ui| {
         if show_section(
             "Pitch & Volume",
             &["Pitch Up (semitones)", "Pitch Down (semitones)", "Volume Up (dB)", "Volume Down (dB)"],
@@ -1442,6 +1466,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         }
         });
 
+        ui.add_space(20.0);
         ui.horizontal(|ui| {
             if ui.button("OK").clicked() {
                 ok = true;
@@ -1457,6 +1482,7 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
                 app.effects.reset_editing_to_defaults();
             }
         });
+        ui.add_space(1.0);
     });
 
     if ok {

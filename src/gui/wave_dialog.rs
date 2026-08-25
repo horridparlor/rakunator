@@ -58,7 +58,11 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     let mut import = false;
     let state = &mut app.wave_dialog;
 
-    egui::Window::new("Create Wave").open(&mut open).show(ctx, |ui| {
+    egui::Window::new("Create Wave")
+        .open(&mut open)
+        .resizable(true)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
+        .show(ctx, |ui| {
         ui.spacing_mut().item_spacing.y += 4.0;
         egui::ComboBox::from_label("Waveform")
             .selected_text(state.waveform.name())
@@ -105,6 +109,13 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             }
         });
         ui.label("(\"Import\" creates a new track. Only .wav import is supported for now.)");
+
+        // This dialog's content is naturally shorter than a manually
+        // dragged-taller window: without claiming the leftover space, the
+        // window's frame/border snaps back to hug the content every frame
+        // instead of visibly growing, making a vertical drag look like it
+        // does nothing.
+        ui.allocate_space(egui::vec2(0.0, ui.available_height()));
     });
 
     app.wave_dialog.open = open;

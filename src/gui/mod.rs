@@ -46,13 +46,27 @@ pub(crate) fn wheel_notches(ui: &egui::Ui) -> f32 {
     })
 }
 
+/// The default `Window` frame with a little extra inner padding on select
+/// edges, on top of the style's normal window margin — for nudging one or
+/// more specific edges' padding without touching the others or the
+/// window's fill/stroke/shadow.
+pub(crate) fn window_frame(ctx: &egui::Context, extra_left: i8, extra_top: i8, extra_right: i8, extra_bottom: i8) -> egui::Frame {
+    let mut frame = egui::Frame::window(&ctx.style_of(ctx.theme()));
+    frame.inner_margin.left += extra_left;
+    frame.inner_margin.top += extra_top;
+    frame.inner_margin.right += extra_right;
+    frame.inner_margin.bottom += extra_bottom;
+    frame
+}
+
 /// Height of one track's header + timeline lane row. Must be tall enough to
-/// fit the header's content (name/menu, Pan, Vol, Mute/Solo+meter rows) —
-/// otherwise the header silently overflows past this height (egui grows the
-/// row to fit it), while every row-index calculation elsewhere (dragging a
-/// clip onto another track, marquee-select, the snap indicator) keeps
-/// assuming rows are exactly `TRACK_ROW_STEP` apart, drifting further off
-/// with each track and making a barely-moved drag jump to the wrong track.
+/// fit the header's content (name/menu, Pan, Vol, Mute/Solo+meter+Wfs
+/// rows) — otherwise the header silently overflows past this height (egui
+/// grows the row to fit it), while every row-index calculation elsewhere
+/// (dragging a clip onto another track, marquee-select, the snap
+/// indicator) keeps assuming rows are exactly `TRACK_ROW_STEP` apart,
+/// drifting further off with each track and making a barely-moved drag
+/// jump to the wrong track.
 pub(crate) const ROW_HEIGHT: f32 = 84.0;
 /// Fixed width of the track header column, so every lane's left edge lines
 /// up regardless of row content.

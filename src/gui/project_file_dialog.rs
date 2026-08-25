@@ -46,7 +46,11 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     let mut browse_save = false;
     let mut browse_load = false;
 
-    egui::Window::new("Project File").open(&mut open).show(ctx, |ui| {
+    egui::Window::new("Project File")
+        .open(&mut open)
+        .resizable(true)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
+        .show(ctx, |ui| {
         ui.spacing_mut().item_spacing.y += 4.0;
         ui.horizontal(|ui| {
             ui.label("Path:");
@@ -76,6 +80,13 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         if let Some(status) = &state.status {
             ui.label(status);
         }
+
+        // This dialog's content is naturally shorter than a manually
+        // dragged-taller window: without claiming the leftover space, the
+        // window's frame/border snaps back to hug the content every frame
+        // instead of visibly growing, making a vertical drag look like it
+        // does nothing.
+        ui.allocate_space(egui::vec2(0.0, ui.available_height()));
     });
 
     if browse_save {
@@ -128,6 +139,7 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
     egui::Window::new("Overwrite file?")
         .collapsible(false)
         .resizable(false)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
         .show(ctx, |ui| {
             ui.label(format!("{} already exists.", path.display()));
             ui.label("Overwrite it?");

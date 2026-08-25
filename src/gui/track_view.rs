@@ -20,10 +20,10 @@ enum TrackMenuAction {
 /// Draws one track's header controls: editable name, pan (5% steps),
 /// volume, mute/solo, its live level meter, and a "..." menu for reordering,
 /// duplicating, and deleting the track. Also its waveform vertical
-/// (amplitude) zoom controls — a "+"/"-" bracketing the Pan/Vol sliders and
-/// the current multiplier shown after the meter — a UI-driven alternative
-/// to Shift-scrolling the lane itself (see `timeline::TimelineState`,
-/// which actually owns the zoom value; this just reads/writes it).
+/// (amplitude) zoom ("Wfs") — a `DragValue` alongside Mute/Solo/the meter,
+/// scroll-adjustable like Pan/Vol — a UI-driven alternative to
+/// Shift-scrolling the lane itself (see `timeline::TimelineState`, which
+/// actually owns the zoom value; this just reads/writes it).
 pub fn draw_header(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -171,18 +171,27 @@ pub fn draw_header(
                 ui.toggle_value(&mut track.soloed, "S");
                 let (peak_l, peak_r) = engine.meters.read(track_index);
                 meter_widget::draw(ui, peak_l, peak_r);
-                let zoom_label = ui
-                    .label(format!("{:.2}x", timeline.vertical_zoom(track_id)))
-                    .on_hover_text("Scroll to zoom the waveform vertically (visual only)");
-                // Scrolling over the multiplier readout zooms it, same
-                // granularity as Shift-scrolling the lane itself.
-                if zoom_label.hovered() {
+
+                // Left as a plain `DragValue` rather than a `Slider` — no
+                // filled trough/background behind it — since its range is
+                // a visual-only vanity zoom, not a mix parameter worth the
+                // same visual weight as Pan/Vol.
+                let mut zoom = timeline.vertical_zoom(track_id);
+                let response = ui
+                    .add(egui::DragValue::new(&mut zoom).range(0.25..=4.0).speed(VERTICAL_ZOOM_STEP).suffix("x"));
+                if response.changed() {
+                    timeline.set_vertical_zoom(track_id, zoom);
+                }
+                // Scrolling over it zooms it, same granularity as
+                // Shift-scrolling the lane itself.
+                if response.hovered() {
                     let notches = super::wheel_notches(ui);
                     if notches != 0.0 {
                         let zoom = timeline.vertical_zoom(track_id) + notches.round() * VERTICAL_ZOOM_STEP;
                         timeline.set_vertical_zoom(track_id, zoom);
                     }
                 }
+                ui.label("Wfs").on_hover_text("Waveform vertical scale (visual only)");
             });
         });
     }

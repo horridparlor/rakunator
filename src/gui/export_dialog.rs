@@ -54,6 +54,8 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
 
     egui::Window::new("Export Project")
         .open(&mut open)
+        .resizable(true)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y += 4.0;
             ui.label("Renders the full multi-track mixdown to <name>.wav and <name>.mp3 in your Downloads folder.");
@@ -64,6 +66,13 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             if ui.button("Export").clicked() {
                 do_export = true;
             }
+
+            // This dialog's content is naturally shorter than a manually
+            // dragged-taller window: without claiming the leftover space,
+            // the window's frame/border snaps back to hug the content
+            // every frame instead of visibly growing, making a vertical
+            // drag look like it does nothing.
+            ui.allocate_space(egui::vec2(0.0, ui.available_height()));
         });
 
     app.export_dialog.open = open;
@@ -106,6 +115,7 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
     egui::Window::new("Overwrite file?")
         .collapsible(false)
         .resizable(false)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
         .show(ctx, |ui| {
             ui.label(format!("{} and/or {}", wav_path.display(), mp3_path.display()));
             ui.label("already exist. Overwrite them?");

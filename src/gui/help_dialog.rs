@@ -13,6 +13,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         .open(&mut open)
         .default_width(520.0)
         .max_height(640.0)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
