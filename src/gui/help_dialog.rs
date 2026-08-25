@@ -304,6 +304,7 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Ctrl+S", "Save straight to the project's current file (or the default path, if it's never been saved)"),
                 ("Ctrl+Shift+S", "Save As — opens a native file picker, then saves to whatever location you choose"),
                 ("Export Project... (toolbar)", "Render the full mixdown to .wav/.mp3 under a name you choose"),
+                ("Ctrl+W", "Close any open dialogs (Create Wave, Project File, Export Project, Edit Effect Steps, Help)"),
             ],
         },
     ]

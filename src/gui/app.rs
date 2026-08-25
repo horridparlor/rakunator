@@ -591,6 +591,18 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
+    // Closes every currently-open dialog (Create Wave, Project File,
+    // Export Project, Edit Effect Steps, Help) — whichever happen to be
+    // open, since more than one can be up at once.
+    let close_dialogs = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::W));
+    if close_dialogs {
+        app.wave_dialog.open = false;
+        app.project_file_dialog.open = false;
+        app.export_dialog.open = false;
+        app.effects.close_settings();
+        app.help_open = false;
+    }
+
     if undo {
         app.project.lock().unwrap().undo();
     }

@@ -434,6 +434,14 @@ impl EffectsState {
         self.editing_tt_fade_curve_adjust = d.tt_fade_curve_adjust;
         self.editing_tt_start_high = d.tt_start_high;
     }
+
+    /// Closes the "Edit Effect Steps" dialog without applying any pending
+    /// edits — `settings_open` is private to this module, so the global
+    /// Ctrl+W "close open dialogs" shortcut in `app.rs` goes through this
+    /// instead of touching the field directly.
+    pub(super) fn close_settings(&mut self) {
+        self.settings_open = false;
+    }
 }
 
 /// The blue accent tint used for icon-only toolbar buttons' idle "bubble"
