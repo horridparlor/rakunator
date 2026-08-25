@@ -167,18 +167,33 @@ pub fn draw_header(
             });
 
             ui.horizontal(|ui| {
+                // Where Pan/Vol's own inline value box starts — right
+                // after their `slider_width`-wide bar — so Wfs's value
+                // box lines up with theirs pixel-for-pixel despite this
+                // row starting with M/S/the meter instead of a bar.
+                let value_column_x = ui.cursor().left() + ui.spacing().slider_width;
+
                 ui.toggle_value(&mut track.muted, "M");
                 ui.toggle_value(&mut track.soloed, "S");
                 let (peak_l, peak_r) = engine.meters.read(track_index);
                 meter_widget::draw(ui, peak_l, peak_r);
 
-                // Left as a plain `DragValue` rather than a `Slider` — no
-                // filled trough/background behind it — since its range is
-                // a visual-only vanity zoom, not a mix parameter worth the
-                // same visual weight as Pan/Vol.
+                ui.add_space((value_column_x - ui.cursor().left()).max(0.0));
+
                 let mut zoom = timeline.vertical_zoom(track_id);
                 let response = ui
-                    .add(egui::DragValue::new(&mut zoom).range(0.25..=4.0).speed(VERTICAL_ZOOM_STEP).suffix("x"));
+                    .scope(|ui| {
+                        // No filled "button" background behind the number
+                        // — a visual-only vanity zoom, not a mix parameter
+                        // worth the same visual weight as Pan/Vol.
+                        let widgets = &mut ui.visuals_mut().widgets;
+                        for style in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+                            style.weak_bg_fill = egui::Color32::TRANSPARENT;
+                            style.bg_stroke = egui::Stroke::NONE;
+                        }
+                        ui.add(egui::DragValue::new(&mut zoom).range(0.25..=4.0).speed(VERTICAL_ZOOM_STEP).suffix("x"))
+                    })
+                    .inner;
                 if response.changed() {
                     timeline.set_vertical_zoom(track_id, zoom);
                 }
