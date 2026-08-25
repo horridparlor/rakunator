@@ -1,5 +1,5 @@
 use super::timeline::format_time;
-use super::RakunatorApp;
+use super::{toast, RakunatorApp};
 use crate::project::reverb::ReverbParams;
 use crate::project::stretch::RampParams;
 use crate::project::trip_toggler::TripTogglerParams;
@@ -112,6 +112,13 @@ pub struct EffectsState {
 
     #[serde(skip)]
     settings_open: bool,
+    /// The "Edit Effect Steps" dialog's own search box (filters which
+    /// sections are shown) — separate from `RakunatorApp::help_search`,
+    /// which is the Help window's. Like that one, this persists across
+    /// opens/closes rather than resetting, so re-opening the dialog keeps
+    /// whatever you last searched for.
+    #[serde(skip)]
+    settings_search: String,
     #[serde(skip)]
     editing_pitch_up: f32,
     #[serde(skip)]
@@ -298,6 +305,7 @@ impl Default for EffectsState {
             tt_start_high: true,
 
             settings_open: false,
+            settings_search: String::new(),
             editing_pitch_up: 1.0,
             editing_pitch_down: 1.0,
             editing_volume_up: 1.0,
@@ -563,27 +571,27 @@ pub fn repeat_last_effect(app: &mut RakunatorApp) {
     match last {
         LastEffect::PitchUp => {
             let step = app.effects.pitch_up_step;
-            apply_to_targets(app, &targets, move |p, id| p.apply_pitch_shift(id, step));
+            apply_to_targets("Pitch Up", app, &targets, move |p, id| p.apply_pitch_shift(id, step));
         }
         LastEffect::PitchDown => {
             let step = app.effects.pitch_down_step;
-            apply_to_targets(app, &targets, move |p, id| p.apply_pitch_shift(id, -step));
+            apply_to_targets("Pitch Down", app, &targets, move |p, id| p.apply_pitch_shift(id, -step));
         }
         LastEffect::VolumeUp => {
             let factor = 10f32.powf(app.effects.volume_up_step_db / 20.0);
-            apply_to_targets(app, &targets, move |p, id| p.apply_gain(id, factor));
+            apply_to_targets("Volume Up", app, &targets, move |p, id| p.apply_gain(id, factor));
         }
         LastEffect::VolumeDown => {
             let factor = 10f32.powf(-app.effects.volume_down_step_db / 20.0);
-            apply_to_targets(app, &targets, move |p, id| p.apply_gain(id, factor));
+            apply_to_targets("Volume Down", app, &targets, move |p, id| p.apply_gain(id, factor));
         }
         LastEffect::TempoUp => {
             let step = app.effects.tempo_up_step_percent;
-            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, step));
+            apply_to_targets("Tempo Up", app, &targets, move |p, id| p.apply_tempo_shift(id, step));
         }
         LastEffect::TempoDown => {
             let step = app.effects.tempo_down_step_percent;
-            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, -step));
+            apply_to_targets("Tempo Down", app, &targets, move |p, id| p.apply_tempo_shift(id, -step));
         }
     }
 }
@@ -593,10 +601,9 @@ pub fn repeat_last_effect(app: &mut RakunatorApp) {
 /// empty space selects the whole track), or the current multi-clip
 /// selection otherwise — see `Project::effect_targets`. "Edit steps..."
 /// opens a small dialog to change the Pitch/Volume step sizes (Up and
-/// Down independently). Pitch shift here is the classic "tape speed"
-/// trick (resample the clip), which changes duration along with pitch —
-/// a true pitch-preserving shift would need a phase vocoder or similar,
-/// which is out of scope for now.
+/// Down independently). Pitch shift preserves tempo/duration (WSOLA, see
+/// `Project::apply_pitch_shift`), the same way Tempo Up/Down preserves
+/// pitch — the two are fully independent of each other, Audacity-style.
 fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
     ui.menu_button("Effects", |ui| {
         let targets = app.project.lock().unwrap().effect_targets();
@@ -610,7 +617,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Pitch Up (+{pitch_up_step:.1} semitone)")))
             .clicked()
         {
-            apply_to_targets(app, &targets, move |p, id| p.apply_pitch_shift(id, pitch_up_step));
+            apply_to_targets("Pitch Up", app, &targets, move |p, id| p.apply_pitch_shift(id, pitch_up_step));
             app.effects.last_effect = Some(LastEffect::PitchUp);
             ui.close();
         }
@@ -621,7 +628,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            apply_to_targets(app, &targets, move |p, id| p.apply_pitch_shift(id, -pitch_down_step));
+            apply_to_targets("Pitch Down", app, &targets, move |p, id| p.apply_pitch_shift(id, -pitch_down_step));
             app.effects.last_effect = Some(LastEffect::PitchDown);
             ui.close();
         }
@@ -631,7 +638,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .clicked()
         {
             let factor = 10f32.powf(volume_up_step / 20.0);
-            apply_to_targets(app, &targets, move |p, id| p.apply_gain(id, factor));
+            apply_to_targets("Volume Up", app, &targets, move |p, id| p.apply_gain(id, factor));
             app.effects.last_effect = Some(LastEffect::VolumeUp);
             ui.close();
         }
@@ -643,7 +650,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .clicked()
         {
             let factor = 10f32.powf(-volume_down_step / 20.0);
-            apply_to_targets(app, &targets, move |p, id| p.apply_gain(id, factor));
+            apply_to_targets("Volume Down", app, &targets, move |p, id| p.apply_gain(id, factor));
             app.effects.last_effect = Some(LastEffect::VolumeDown);
             ui.close();
         }
@@ -652,14 +659,14 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new("Fade In (Ctrl+F)"))
             .clicked()
         {
-            apply_to_targets(app, &targets, |p, id| p.apply_fade_in(id));
+            apply_to_targets("Fade In", app, &targets, |p, id| p.apply_fade_in(id));
             ui.close();
         }
         if ui
             .add_enabled(enabled, egui::Button::new("Fade Out (Ctrl+Shift+F)"))
             .clicked()
         {
-            apply_to_targets(app, &targets, |p, id| p.apply_fade_out(id));
+            apply_to_targets("Fade Out", app, &targets, |p, id| p.apply_fade_out(id));
             ui.close();
         }
         ui.separator();
@@ -678,7 +685,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
         {
             let start_gain = db_to_gain(fade_in_a.min(fade_in_b));
             let end_gain = db_to_gain(fade_in_a.max(fade_in_b));
-            apply_to_targets(app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+            apply_to_targets("Adjustable Fade In", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
             ui.close();
         }
         let fade_out_a = app.effects.fade_out_point_a_db;
@@ -696,7 +703,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
         {
             let start_gain = db_to_gain(fade_out_a.max(fade_out_b));
             let end_gain = db_to_gain(fade_out_a.min(fade_out_b));
-            apply_to_targets(app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+            apply_to_targets("Adjustable Fade Out", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
             ui.close();
         }
         ui.separator();
@@ -719,7 +726,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Tempo Up (+{tempo_up_step:.1}%)")))
             .clicked()
         {
-            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, tempo_up_step));
+            apply_to_targets("Tempo Up", app, &targets, move |p, id| p.apply_tempo_shift(id, tempo_up_step));
             app.effects.last_effect = Some(LastEffect::TempoUp);
             ui.close();
         }
@@ -727,54 +734,54 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Tempo Down (-{tempo_down_step:.1}%)")))
             .clicked()
         {
-            apply_to_targets(app, &targets, move |p, id| p.apply_tempo_shift(id, -tempo_down_step));
+            apply_to_targets("Tempo Down", app, &targets, move |p, id| p.apply_tempo_shift(id, -tempo_down_step));
             app.effects.last_effect = Some(LastEffect::TempoDown);
             ui.close();
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Give to Speech")).clicked() {
-            apply_to_targets(app, &targets, |p, id| p.apply_give_to_speech(id));
+            apply_to_targets("Give to Speech", app, &targets, |p, id| p.apply_give_to_speech(id));
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Telephone")).clicked() {
-            apply_to_targets(app, &targets, |p, id| p.apply_telephone(id));
+            apply_to_targets("Telephone", app, &targets, |p, id| p.apply_telephone(id));
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Autotune")).clicked() {
-            apply_to_targets(app, &targets, |p, id| p.apply_autotune(id));
+            apply_to_targets("Autotune", app, &targets, |p, id| p.apply_autotune(id));
             ui.close();
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Reverb")).clicked() {
             let params = reverb_params(&app.effects);
-            apply_to_targets(app, &targets, move |p, id| p.apply_reverb(id, &params));
+            apply_to_targets("Reverb", app, &targets, move |p, id| p.apply_reverb(id, &params));
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Echo")).clicked() {
             let delay = app.effects.echo_delay_seconds;
             let decay = app.effects.echo_decay;
-            apply_to_targets(app, &targets, move |p, id| p.apply_echo(id, delay, decay));
+            apply_to_targets("Echo", app, &targets, move |p, id| p.apply_echo(id, delay, decay));
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Distortion (Hard Clip)")).clicked() {
             let drive = app.effects.distortion_drive_db;
             let threshold = app.effects.distortion_threshold;
-            apply_to_targets(app, &targets, move |p, id| p.apply_hard_clip_distortion(id, drive, threshold));
+            apply_to_targets("Hard Clip Distortion", app, &targets, move |p, id| p.apply_hard_clip_distortion(id, drive, threshold));
             ui.close();
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Sliding Stretch")).clicked() {
             let params = sliding_stretch_params(&app.effects);
-            apply_to_targets(app, &targets, move |p, id| p.apply_sliding_stretch(id, &params));
+            apply_to_targets("Sliding Stretch", app, &targets, move |p, id| p.apply_sliding_stretch(id, &params));
             ui.close();
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Invert")).clicked() {
-            apply_to_targets(app, &targets, |p, id| p.apply_invert(id));
+            apply_to_targets("Invert", app, &targets, |p, id| p.apply_invert(id));
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Reverse")).clicked() {
-            apply_to_targets(app, &targets, |p, id| p.apply_reverse(id));
+            apply_to_targets("Reverse", app, &targets, |p, id| p.apply_reverse(id));
             ui.close();
         }
         if ui
@@ -782,7 +789,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .on_hover_text("Swaps left/right on a stereo clip; no effect on mono clips")
             .clicked()
         {
-            apply_to_targets(app, &targets, |p, id| p.apply_swap_channels(id));
+            apply_to_targets("Swap Channels", app, &targets, |p, id| p.apply_swap_channels(id));
             ui.close();
         }
         ui.separator();
@@ -796,7 +803,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .clicked()
         {
             let params = pan_toggle_params(&app.effects);
-            apply_to_targets(app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
+            apply_to_targets("Pan Toggle", app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
             ui.close();
         }
         if ui
@@ -810,7 +817,7 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .clicked()
         {
             let params = rattle_params(&app.effects);
-            apply_to_targets(app, &targets, move |p, id| p.apply_rattle(id, &params));
+            apply_to_targets("Rattle", app, &targets, move |p, id| p.apply_rattle(id, &params));
             ui.close();
         }
         if ui
@@ -1045,8 +1052,89 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
     let mut ok = false;
     let mut cancel = false;
 
-    egui::Window::new("Edit Effect Steps").open(&mut open).max_height(600.0).show(ctx, |ui| {
+    egui::Window::new("Edit Effect Steps").open(&mut open).default_width(520.0).max_height(600.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            // Right-to-left so the Clear button claims its width first, and
+            // the text edit fills exactly what's left — see the matching
+            // comment in `help_dialog::draw` for why the naive left-to-right
+            // order (text edit first, `desired_width(INFINITY)`) overflows
+            // the row by one button's width and misaligns it under the
+            // window's own close button.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !app.effects.settings_search.is_empty()
+                    && ui.button("\u{2715}").on_hover_text("Clear").clicked()
+                {
+                    app.effects.settings_search.clear();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.effects.settings_search)
+                        .hint_text("effect or setting name...")
+                        .desired_width(ui.available_width()),
+                );
+            });
+        });
+        ui.add_space(4.0);
+
+        let query = app.effects.settings_search.trim().to_lowercase();
+        // Whether `title`'s section should be drawn: an empty query always
+        // shows everything; otherwise the section title matching (which, as
+        // in Help, shows every field under it regardless of their own
+        // labels) or any of that section's own field labels matching. A
+        // pure function of `query` (no shared mutable state) so it can be
+        // called both here, to precompute whether *anything* matched, and
+        // again per-section below as each one's visibility gate — a
+        // `FnMut` version that updated a shared "did anything match" flag
+        // as a side effect doesn't borrow-check once it's also captured by
+        // the `ScrollArea` closure below, since that closure would need to
+        // hold the mutable borrow live for its entire body.
+        let show_section = |title: &str, field_labels: &[&str]| -> bool {
+            query.is_empty()
+                || title.to_lowercase().contains(&query)
+                || field_labels.iter().any(|l| l.to_lowercase().contains(&query))
+        };
+        let any_section_shown = show_section(
+            "Pitch & Volume",
+            &["Pitch Up (semitones)", "Pitch Down (semitones)", "Volume Up (dB)", "Volume Down (dB)"],
+        ) || show_section("Adjustable Fades", &["Fade In points (dB)", "Fade Out points (dB)"])
+            || show_section("Fade Toggle", &["Fade In first", "Fade Out first"])
+            || show_section("Tempo Steps", &["Tempo Up (%)", "Tempo Down (%)"])
+            || show_section(
+                "Reverb",
+                &[
+                    "Room Size", "Reverberance", "HF Damping", "Tone Low", "Tone High", "Wet Gain (dB)",
+                    "Dry Gain (dB)", "Stereo Width", "Pre-Delay (ms)", "Wet Only",
+                ],
+            )
+            || show_section("Echo", &["Delay time (s)", "Decay factor"])
+            || show_section("Distortion (Hard Clip)", &["Drive (dB)", "Clip Threshold"])
+            || show_section(
+                "Sliding Stretch",
+                &["Initial Tempo Change (%)", "Final Tempo Change (%)", "Initial Pitch Shift (semitones)", "Final Pitch Shift (semitones)"],
+            )
+            || show_section(
+                "Rattle",
+                &[
+                    "Pitch Up (semitones)", "Pitch Down (semitones)", "Tempo +x% (first clip)", "Tempo -y% (second clip)",
+                    "Fade In points (dB)", "Sliding Stretch Initial Tempo (%)", "Sliding Stretch Final Tempo (%)",
+                    "Sliding Stretch Initial Pitch (st)", "Sliding Stretch Final Pitch (st)", "Repeat Count (A+B clips)",
+                ],
+            )
+            || show_section("Pan Toggle", &["Fade-in side", "High dB (fade-in end / fade-out start)", "Low dB (fade-in start / fade-out end)"])
+            || show_section(
+                "Trip Toggler",
+                &[
+                    "Detection mode", "Starts", "Shift mode", "Detail (detection fine-tune)", "Fade Curve Adjust (-100..100)",
+                    "Gradual High dB", "Gradual Low dB", "Instant High Gain Step (dB)", "Instant Low Gain Step (dB)",
+                    "Instant High Fade (dB)", "Instant Low Fade (dB)",
+                ],
+            );
+
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+        if show_section(
+            "Pitch & Volume",
+            &["Pitch Up (semitones)", "Pitch Down (semitones)", "Volume Up (dB)", "Volume Down (dB)"],
+        ) {
         section_header(ui, "Pitch & Volume");
         egui::Grid::new("effect_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Pitch Up (semitones):");
@@ -1065,7 +1153,9 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_volume_down).range(0.1..=24.0).speed(0.1));
             ui.end_row();
         });
+        }
 
+        if show_section("Adjustable Fades", &["Fade In points (dB)", "Fade Out points (dB)"]) {
         section_header(ui, "Adjustable Fades");
         ui.label("Two dB points, in either order — the effect works out which is louder/quieter.");
         egui::Grid::new("fade_points_grid").num_columns(3).show(ui, |ui| {
@@ -1079,14 +1169,18 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_fade_out_b).range(-60.0..=24.0).speed(0.1));
             ui.end_row();
         });
+        }
 
+        if show_section("Fade Toggle", &["Fade In first", "Fade Out first"]) {
         section_header(ui, "Fade Toggle");
         ui.label("Which comes first on each selected track's earliest clip?");
         ui.horizontal(|ui| {
             ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, true, "Fade In first");
             ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, false, "Fade Out first");
         });
+        }
 
+        if show_section("Tempo Steps", &["Tempo Up (%)", "Tempo Down (%)"]) {
         section_header(ui, "Tempo Steps");
         egui::Grid::new("tempo_steps_grid").num_columns(2).show(ui, |ui| {
             ui.label("Tempo Up (%):");
@@ -1097,7 +1191,15 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_tempo_down).range(0.1..=90.0).speed(0.5));
             ui.end_row();
         });
+        }
 
+        if show_section(
+            "Reverb",
+            &[
+                "Room Size", "Reverberance", "HF Damping", "Tone Low", "Tone High", "Wet Gain (dB)",
+                "Dry Gain (dB)", "Stereo Width", "Pre-Delay (ms)", "Wet Only",
+            ],
+        ) {
         section_header(ui, "Reverb");
         egui::Grid::new("reverb_grid").num_columns(2).show(ui, |ui| {
             ui.label("Room Size:");
@@ -1131,7 +1233,9 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.checkbox(&mut app.effects.editing_reverb_wet_only, "");
             ui.end_row();
         });
+        }
 
+        if show_section("Echo", &["Delay time (s)", "Decay factor"]) {
         section_header(ui, "Echo");
         egui::Grid::new("echo_grid").num_columns(2).show(ui, |ui| {
             ui.label("Delay time (s):");
@@ -1141,7 +1245,9 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_echo_decay).range(0.0..=2.0).speed(0.01));
             ui.end_row();
         });
+        }
 
+        if show_section("Distortion (Hard Clip)", &["Drive (dB)", "Clip Threshold"]) {
         section_header(ui, "Distortion (Hard Clip)");
         egui::Grid::new("distortion_grid").num_columns(2).show(ui, |ui| {
             ui.label("Drive (dB):");
@@ -1151,7 +1257,12 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_distortion_threshold).range(0.01..=1.0).speed(0.01));
             ui.end_row();
         });
+        }
 
+        if show_section(
+            "Sliding Stretch",
+            &["Initial Tempo Change (%)", "Final Tempo Change (%)", "Initial Pitch Shift (semitones)", "Final Pitch Shift (semitones)"],
+        ) {
         section_header(ui, "Sliding Stretch");
         ui.label("Ramps tempo/pitch from the clip's start to its end.");
         egui::Grid::new("sliding_stretch_grid").num_columns(2).show(ui, |ui| {
@@ -1168,7 +1279,16 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_stretch_final_pitch_semitones).range(-24.0..=24.0).speed(0.1));
             ui.end_row();
         });
+        }
 
+        if show_section(
+            "Rattle",
+            &[
+                "Pitch Up (semitones)", "Pitch Down (semitones)", "Tempo +x% (first clip)", "Tempo -y% (second clip)",
+                "Fade In points (dB)", "Sliding Stretch Initial Tempo (%)", "Sliding Stretch Final Tempo (%)",
+                "Sliding Stretch Initial Pitch (st)", "Sliding Stretch Final Pitch (st)", "Repeat Count (A+B clips)",
+            ],
+        ) {
         section_header(ui, "Rattle");
         ui.label("Own Adjustable Fade In / Sliding Stretch settings, separate from the ones above.");
         egui::Grid::new("rattle_grid").num_columns(2).show(ui, |ui| {
@@ -1208,7 +1328,9 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
         });
         // Always an even number of whole [A, B] pairs, in steps of 2.
         app.effects.editing_rattle_repeat_count = (app.effects.editing_rattle_repeat_count / 2).max(1) * 2;
+        }
 
+        if show_section("Pan Toggle", &["Fade-in side", "High dB (fade-in end / fade-out start)", "Low dB (fade-in start / fade-out end)"]) {
         section_header(ui, "Pan Toggle");
         ui.label("Splits a stereo clip's channels, fades one up and the other down.");
         ui.horizontal(|ui| {
@@ -1224,7 +1346,16 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             ui.add(egui::DragValue::new(&mut app.effects.editing_pan_toggle_low_db).range(-60.0..=24.0).speed(0.1));
             ui.end_row();
         });
+        }
 
+        if show_section(
+            "Trip Toggler",
+            &[
+                "Detection mode", "Starts", "Shift mode", "Detail (detection fine-tune)", "Fade Curve Adjust (-100..100)",
+                "Gradual High dB", "Gradual Low dB", "Instant High Gain Step (dB)", "Instant Low Gain Step (dB)",
+                "Instant High Fade (dB)", "Instant Low Fade (dB)",
+            ],
+        ) {
         section_header(ui, "Trip Toggler");
         ui.label("Finds clear low points and alternates a fade down/up across the segments.");
         ui.horizontal(|ui| {
@@ -1274,6 +1405,12 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
             });
             ui.end_row();
         });
+        }
+
+        if !any_section_shown {
+            ui.add_space(12.0);
+            ui.weak(format!("No effect settings match \"{}\".", app.effects.settings_search.trim()));
+        }
         });
 
         ui.horizontal(|ui| {
@@ -1360,9 +1497,22 @@ pub fn draw_effects_settings_dialog(ctx: &egui::Context, app: &mut RakunatorApp)
     }
 }
 
-fn apply_to_targets(app: &RakunatorApp, targets: &[ClipId], f: impl Fn(&mut crate::project::Project, ClipId)) {
-    let mut project = app.project.lock().unwrap();
-    for &id in targets {
-        f(&mut project, id);
+/// Applies `f` to every clip in `targets`, then toasts a confirmation
+/// naming `label` (the effect) and how many clips it landed on — or, if
+/// `targets` is empty (nothing selected), toasts that instead of silently
+/// doing nothing, without ever taking the project lock.
+fn apply_to_targets(label: &str, app: &mut RakunatorApp, targets: &[ClipId], f: impl Fn(&mut crate::project::Project, ClipId)) {
+    if targets.is_empty() {
+        toast::show(app, format!("{label}: no clip selected"));
+        return;
     }
+    {
+        let mut project = app.project.lock().unwrap();
+        for &id in targets {
+            f(&mut project, id);
+        }
+    }
+    let n = targets.len();
+    let plural = if n == 1 { "clip" } else { "clips" };
+    toast::show(app, format!("{label} applied to {n} {plural}"));
 }

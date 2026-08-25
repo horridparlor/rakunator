@@ -10,11 +10,15 @@ use super::{ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_STEP};
 const DEFAULT_PX_PER_SAMPLE: f32 = 480.0 / 48_000.0;
 const MIN_PX_PER_SAMPLE: f32 = 0.0005;
 const MAX_PX_PER_SAMPLE: f32 = 2.0;
-/// How far a track's waveform can be vertically (amplitude) zoomed in, so
-/// quiet passages become visible — purely a display scale, never touches
-/// the actual audio or the mix.
-const MIN_VERTICAL_ZOOM: f32 = 1.0;
-const MAX_VERTICAL_ZOOM: f32 = 20.0;
+/// Range a track's waveform can be vertically (amplitude) zoomed to, so
+/// quiet passages can be zoomed in to see, or a hot/clipping one zoomed
+/// out to fit — purely a display scale, never touches the actual audio or
+/// the mix. Adjustable via the track header's +/- buttons (`VERTICAL_ZOOM_STEP`
+/// each) or by Shift-scrolling a lane.
+const MIN_VERTICAL_ZOOM: f32 = 0.25;
+const MAX_VERTICAL_ZOOM: f32 = 4.0;
+/// The track header's +/- vertical-zoom buttons' step size.
+pub const VERTICAL_ZOOM_STEP: f32 = 0.25;
 /// How close (in pixels) a drag has to start to a clip's edge to trim it
 /// instead of moving it.
 const EDGE_GRAB_PX: f32 = 12.0;
@@ -142,10 +146,19 @@ impl TimelineState {
             .map(|left| left + (sample as f32 - self.scroll_x_samples) * self.px_per_sample)
     }
 
-    /// `track_id`'s waveform vertical (amplitude) zoom factor — 1.0 if it's
-    /// never been Shift-scrolled.
-    fn vertical_zoom(&self, track_id: TrackId) -> f32 {
+    /// `track_id`'s waveform vertical (amplitude) zoom factor — 1.0 (the
+    /// default/unzoomed multiplier) if it's never been changed.
+    pub fn vertical_zoom(&self, track_id: TrackId) -> f32 {
         self.vertical_zoom.get(&track_id).copied().unwrap_or(1.0)
+    }
+
+    /// Sets `track_id`'s waveform vertical (amplitude) zoom factor,
+    /// clamped to `[MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM]` — for the track
+    /// header's +/- buttons (Shift-scrolling a lane goes through
+    /// `handle_vertical_zoom` instead, but ends up in the same map).
+    pub fn set_vertical_zoom(&mut self, track_id: TrackId, zoom: f32) {
+        self.vertical_zoom
+            .insert(track_id, zoom.clamp(MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM));
     }
 }
 
@@ -461,9 +474,7 @@ fn handle_vertical_zoom(ui: &egui::Ui, hovered: bool, state: &mut TimelineState,
 
     let zoom = if scroll_y > 0.0 { 1.15 } else { 1.0 / 1.15 };
     let current = state.vertical_zoom(track_id);
-    state
-        .vertical_zoom
-        .insert(track_id, (current * zoom).clamp(MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM));
+    state.set_vertical_zoom(track_id, current * zoom);
 
     ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
 }

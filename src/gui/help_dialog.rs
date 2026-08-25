@@ -16,14 +16,26 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.help_search)
-                        .hint_text("shortcut, effect, or keyword...")
-                        .desired_width(f32::INFINITY),
-                );
-                if !app.help_search.is_empty() && ui.button("\u{2715}").on_hover_text("Clear").clicked() {
-                    app.help_search.clear();
-                }
+                // Right-to-left so the Clear button claims its width first
+                // (from the right edge inward); the text edit then fills
+                // exactly what's left via `available_width()`, rather than
+                // the old left-to-right order where the text edit's
+                // `desired_width(INFINITY)` grabbed the *entire* row first
+                // and the button got tacked on after it — overflowing the
+                // row (and, since the window sizes to fit its content, the
+                // whole window) by one button's width, which is why the
+                // Clear button never lined up under the window's own close
+                // button above it.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !app.help_search.is_empty() && ui.button("\u{2715}").on_hover_text("Clear").clicked() {
+                        app.help_search.clear();
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.help_search)
+                            .hint_text("shortcut, effect, or keyword...")
+                            .desired_width(ui.available_width()),
+                    );
+                });
             });
             ui.add_space(4.0);
 
@@ -32,11 +44,16 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 let mut any_match = false;
 
                 for entry in help_sections() {
+                    // A query matching the section title (e.g. "Recording")
+                    // shows every row under it, not just whichever rows
+                    // happen to also mention the word themselves.
+                    let title_matches = !query.is_empty() && entry.title.to_lowercase().contains(&query);
                     let matches: Vec<&(&str, &str)> = entry
                         .rows
                         .iter()
                         .filter(|(action, description)| {
                             query.is_empty()
+                                || title_matches
                                 || action.to_lowercase().contains(&query)
                                 || description.to_lowercase().contains(&query)
                         })
@@ -293,6 +310,9 @@ fn section(ui: &mut egui::Ui, title: &str) {
 fn row(ui: &mut egui::Ui, action: &str, description: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(action).strong().monospace());
-        ui.label(format!(" — {description}"));
+        // Explicit `.wrap()` rather than relying on the ambient default, so
+        // a long description reliably wraps onto more lines instead of
+        // ever reporting an unbroken width the window might size itself to.
+        ui.add(egui::Label::new(format!(" — {description}")).wrap());
     });
 }

@@ -1367,26 +1367,23 @@ impl Project {
         self.apply_sliding_stretch(combined_id, &params.stretch);
     }
 
-    /// Shifts a clip's pitch by `semitones` (positive = up, negative =
-    /// down) using the classic "tape speed" trick: resampling the clip
-    /// changes both its pitch and its playback duration together. A true
-    /// pitch-preserving shift would need a phase vocoder or similar
-    /// time-stretching algorithm, which is out of scope for now.
+    /// A constant-ratio Pitch Up/Down: WSOLA pitch shift by `semitones`
+    /// (positive = up, negative = down) with tempo left untouched — the
+    /// same `stretch::apply_time_pitch_ramp` engine `apply_tempo_shift`
+    /// uses, just with the tempo/pitch roles swapped, so pitch and tempo
+    /// are shifted fully independently of each other (Audacity-style)
+    /// rather than the old "tape speed" resample trick, which changed
+    /// both together. Destructive: bakes the clip's current trim state
+    /// into a fresh buffer; its length is preserved (mod WSOLA's usual
+    /// rounding).
     pub fn apply_pitch_shift(&mut self, clip_id: ClipId, semitones: f32) {
-        let Some(track_id) = self.find_clip_track(clip_id) else {
-            return;
+        let params = stretch::RampParams {
+            initial_tempo_percent: 0.0,
+            final_tempo_percent: 0.0,
+            initial_pitch_semitones: semitones,
+            final_pitch_semitones: semitones,
         };
-        self.push_undo();
-        let Some(track) = self.track_mut(track_id) else {
-            return;
-        };
-        let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) else {
-            return;
-        };
-
-        let channels = clip.channels();
-        let resampled = resample_for_pitch(clip.visible_samples(), channels as usize, semitones);
-        *clip = Clip::from_samples_channels(clip.id, clip.name.clone(), clip.start_sample, resampled, channels);
+        self.apply_stretch_ramp(clip_id, &params);
     }
 
     /// Silences samples in `[from_sample, to_sample)` (absolute project

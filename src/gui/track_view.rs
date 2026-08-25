@@ -2,6 +2,7 @@ use crate::audio_engine::AudioEngine;
 use crate::project::{Project, TrackId};
 
 use super::meter_widget;
+use super::timeline::{TimelineState, VERTICAL_ZOOM_STEP};
 
 enum TrackMenuAction {
     MoveUp,
@@ -18,8 +19,18 @@ enum TrackMenuAction {
 
 /// Draws one track's header controls: editable name, pan (5% steps),
 /// volume, mute/solo, its live level meter, and a "..." menu for reordering,
-/// duplicating, and deleting the track.
-pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, engine: &AudioEngine) {
+/// duplicating, and deleting the track. Also its waveform vertical
+/// (amplitude) zoom controls — a "+"/"-" bracketing the Pan/Vol sliders and
+/// the current multiplier shown after the meter — a UI-driven alternative
+/// to Shift-scrolling the lane itself (see `timeline::TimelineState`,
+/// which actually owns the zoom value; this just reads/writes it).
+pub fn draw_header(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    track_id: TrackId,
+    engine: &AudioEngine,
+    timeline: &mut TimelineState,
+) {
     let Some(track_index) = project.tracks.iter().position(|t| t.id == track_id) else {
         return;
     };
@@ -121,6 +132,17 @@ pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, 
             });
 
             ui.horizontal(|ui| {
+                if ui
+                    .small_button("+")
+                    .on_hover_text("Zoom the waveform in vertically, to see quiet detail (visual only)")
+                    .clicked()
+                {
+                    let zoom = timeline.vertical_zoom(track_id) + VERTICAL_ZOOM_STEP;
+                    timeline.set_vertical_zoom(track_id, zoom);
+                }
+            });
+
+            ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::Slider::new(&mut track.pan_percent, -100..=100)
                         .step_by(5.0)
@@ -156,10 +178,22 @@ pub fn draw_header(ui: &mut egui::Ui, project: &mut Project, track_id: TrackId, 
             });
 
             ui.horizontal(|ui| {
+                if ui
+                    .small_button("\u{2212}")
+                    .on_hover_text("Zoom the waveform out vertically (visual only)")
+                    .clicked()
+                {
+                    let zoom = timeline.vertical_zoom(track_id) - VERTICAL_ZOOM_STEP;
+                    timeline.set_vertical_zoom(track_id, zoom);
+                }
+            });
+
+            ui.horizontal(|ui| {
                 ui.toggle_value(&mut track.muted, "M");
                 ui.toggle_value(&mut track.soloed, "S");
                 let (peak_l, peak_r) = engine.meters.read(track_index);
                 meter_widget::draw(ui, peak_l, peak_r);
+                ui.label(format!("{:.2}x", timeline.vertical_zoom(track_id)));
             });
         });
     }

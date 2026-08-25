@@ -359,7 +359,7 @@ impl eframe::App for RakunatorApp {
                         });
                         ui.horizontal(|ui| {
                             ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, ROW_HEIGHT), |ui| {
-                                track_view::draw_header(ui, &mut project, *track_id, engine);
+                                track_view::draw_header(ui, &mut project, *track_id, engine, timeline_state);
                             });
                             timeline::draw_lane(
                                 ui,
@@ -387,22 +387,16 @@ impl eframe::App for RakunatorApp {
             });
         });
 
-        let mut project_dialog_pending_close = false;
         if !recording {
             wave_dialog::draw(ui.ctx(), self);
             export_dialog::draw(ui.ctx(), self);
-            project_dialog_pending_close = project_file_dialog::draw(ui.ctx(), self);
+            project_file_dialog::draw(ui.ctx(), self);
             toolbar::draw_effects_settings_dialog(ui.ctx(), self);
         }
         help_dialog::draw(ui.ctx(), self);
         let toast_active = toast::draw(ui.ctx(), self);
 
-        if self.engine.is_playing()
-            || recording
-            || toast_active
-            || project_dialog_pending_close
-            || self.timeline.click_snap_flash_active()
-        {
+        if self.engine.is_playing() || recording || toast_active || self.timeline.click_snap_flash_active() {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
     }

@@ -1,13 +1,7 @@
 use crate::project::{self, Project};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use super::{toast, RakunatorApp};
-
-/// How long the dialog stays open after a successful Save/Save As, so the
-/// "Saved to ..." status line is visible for a moment before it
-/// auto-closes.
-const CLOSE_DELAY: Duration = Duration::from_secs(1);
 
 pub struct ProjectFileDialogState {
     pub open: bool,
@@ -17,9 +11,6 @@ pub struct ProjectFileDialogState {
     /// already exists — the confirm popup (`draw_overwrite_confirm`) reads
     /// this, and actually saves only once the user confirms.
     confirm_overwrite_path: Option<PathBuf>,
-    /// Set right after a successful Save/Save As (see `CLOSE_DELAY`),
-    /// cleared if the dialog closes some other way first.
-    close_at: Option<Instant>,
 }
 
 impl Default for ProjectFileDialogState {
@@ -32,7 +23,6 @@ impl Default for ProjectFileDialogState {
             path_text: default_path.display().to_string(),
             status: None,
             confirm_overwrite_path: None,
-            close_at: None,
         }
     }
 }
@@ -40,20 +30,12 @@ impl Default for ProjectFileDialogState {
 /// Draws the "Project File" modal: a path field plus Save/Load buttons for
 /// `.raku` project files. Runs synchronously on the GUI thread — project
 /// sizes at this app's scale serialize fast enough that a background
-/// thread (as used for export) isn't worth the added complexity here.
-/// Returns whether the dialog is waiting out `CLOSE_DELAY` before
-/// auto-closing, so the caller knows to keep requesting repaints for that.
-pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) -> bool {
+/// thread (as used for export) isn't worth the added complexity here. A
+/// successful Save/Save As/Load closes the dialog immediately and shows a
+/// toast, rather than lingering on an in-dialog status line.
+pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     if !app.project_file_dialog.open {
-        app.project_file_dialog.close_at = None;
-        return false;
-    }
-    if let Some(deadline) = app.project_file_dialog.close_at
-        && Instant::now() >= deadline
-    {
-        app.project_file_dialog.open = false;
-        app.project_file_dialog.close_at = None;
-        return false;
+        return;
     }
 
     let mut open = true;
@@ -144,8 +126,6 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) -> bool {
         let path = PathBuf::from(&app.project_file_dialog.path_text);
         do_load(app, &path);
     }
-
-    app.project_file_dialog.close_at.is_some()
 }
 
 /// A small modal on top of the "Project File" window, shown instead of
@@ -190,9 +170,7 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
 /// own current file rather than an arbitrary new path.
 pub fn save_current(app: &mut RakunatorApp) {
     let path = PathBuf::from(&app.project_file_dialog.path_text);
-    if do_save(app, &path) {
-        toast::show(app, format!("Saved {}", display_file_name(&path)));
-    }
+    do_save(app, &path);
 }
 
 /// Loads `path` as the project, replacing whatever's currently open, and
@@ -207,7 +185,6 @@ fn do_load(app: &mut RakunatorApp, path: &std::path::Path) {
             app.project_name = file_stem(path);
             app.project_file_dialog.status = None;
             app.project_file_dialog.open = false;
-            app.project_file_dialog.close_at = None;
             toast::show(app, format!("Loaded {}", display_file_name(path)));
         }
         Err(e) => {
@@ -216,25 +193,27 @@ fn do_load(app: &mut RakunatorApp, path: &std::path::Path) {
     }
 }
 
-/// Serializes the current project to `path`, updating the status line and
-/// (on success) `project_name` — the actual save, run either directly (the
-/// target didn't already exist) or after `draw_overwrite_confirm`, and sets
-/// `close_at` so the dialog auto-closes after `CLOSE_DELAY`. Returns whether
-/// it succeeded, so `save_current` knows whether to toast about it.
-fn do_save(app: &mut RakunatorApp, path: &std::path::Path) -> bool {
+/// Serializes the current project to `path` — the actual save, run either
+/// directly (the target didn't already exist) or after
+/// `draw_overwrite_confirm`. On success, closes the dialog immediately and
+/// shows a toast (rather than lingering on an in-dialog status line the
+/// way a failure does, below, since there's nothing left to look at once
+/// it's closed).
+fn do_save(app: &mut RakunatorApp, path: &std::path::Path) {
     let snapshot = app.project.lock().unwrap().clone();
     let result = project::persistence::save_project(&snapshot, path);
-    let now = timestamp();
-    let succeeded = result.is_ok();
-    app.project_file_dialog.status = Some(match result {
+    match result {
         Ok(()) => {
             app.project_name = file_stem(path);
-            app.project_file_dialog.close_at = Some(Instant::now() + CLOSE_DELAY);
-            format!("Saved to {} at {now}", path.display())
+            app.project_file_dialog.status = None;
+            app.project_file_dialog.open = false;
+            toast::show(app, format!("Saved {}", display_file_name(path)));
         }
-        Err(e) => format!("Save failed at {now}: {e}"),
-    });
-    succeeded
+        Err(e) => {
+            let now = timestamp();
+            app.project_file_dialog.status = Some(format!("Save failed at {now}: {e}"));
+        }
+    }
 }
 
 /// Current wall-clock time (HH:MM:SS), so repeated Save/Load presses show
