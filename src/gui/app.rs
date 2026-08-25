@@ -421,10 +421,21 @@ fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
 }
 
-/// How far Left/Right nudge selected clips (or the playhead) per key press —
-/// kept small for precise positioning; Shift+Left/Right jump to the very
-/// start/end instead of nudging.
-const NUDGE_SECONDS: f32 = 0.01;
+/// How far Left/Right nudge selected clips (or the playhead) per key press,
+/// in *screen pixels* at the timeline's current zoom — rather than a fixed
+/// sample/time amount, so it stays a small, precise nudge when zoomed in
+/// (where a fixed time amount would span many pixels and make it
+/// impossible to land on a specific spot) and scales up proportionally
+/// when zoomed out. Shift+Left/Right jump to the very start/end instead of
+/// nudging.
+const NUDGE_PIXELS: f32 = 4.0;
+
+/// The nudge step in samples for the timeline's current zoom level (see
+/// `NUDGE_PIXELS`) — always at least 1 sample so a key press never does
+/// nothing, however far zoomed in.
+fn nudge_samples(app: &RakunatorApp) -> i64 {
+    ((NUDGE_PIXELS / app.timeline.px_per_sample).round() as i64).max(1)
+}
 
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
 /// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
@@ -583,7 +594,7 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         // With no clip selected, these move the playhead itself instead of
         // a clip that isn't there.
         if nudge_left || nudge_right {
-            let nudge = (app.sample_rate_hz as f32 * NUDGE_SECONDS) as i64;
+            let nudge = nudge_samples(app);
             let delta = if nudge_left { -nudge } else { nudge };
             let new_pos = (app.engine.position() as i64 + delta).max(0) as u64;
             app.engine.seek(new_pos);
@@ -616,7 +627,7 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
             project.split_clip(*id, playhead);
         }
     } else if nudge_left || nudge_right {
-        let nudge = (app.sample_rate_hz as f32 * NUDGE_SECONDS) as i64;
+        let nudge = nudge_samples(app);
         let delta = if nudge_left { -nudge } else { nudge };
         for id in &selected_ids {
             if let Some(track_id) = project.find_clip_track(*id) {
