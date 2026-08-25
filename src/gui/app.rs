@@ -439,11 +439,13 @@ fn nudge_samples(app: &RakunatorApp) -> i64 {
 
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s); Ctrl+F /
 /// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
-/// adds a new track; Left/Right nudges the selected clip(s) in time; plain
-/// Space toggles play/pause (resuming from wherever it was paused); plain S
-/// splits the selected clip(s) at the playhead. All keyboard handling is
-/// skipped while a text field (e.g. a track name) has focus, so typing a
-/// space or an "s" doesn't hijack the transport.
+/// adds a new track; Ctrl+M toggles the window between maximized and
+/// restored; Ctrl+Escape quits the application; Left/Right nudges the
+/// selected clip(s) in time; plain Space toggles play/pause (resuming from
+/// wherever it was paused); plain S splits the selected clip(s) at the
+/// playhead. All keyboard handling is skipped while a text field (e.g. a
+/// track name) has focus, so typing a space or an "s" doesn't hijack the
+/// transport.
 fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
@@ -502,6 +504,21 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if toggle_fullscreen {
         let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+    }
+
+    let toggle_maximized = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::M));
+    if toggle_maximized {
+        let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+    }
+
+    let quit = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::Escape));
+    if quit {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     if undo {

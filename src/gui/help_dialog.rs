@@ -83,6 +83,8 @@ fn help_sections() -> &'static [HelpSection] {
             rows: &[
                 ("Space", "Play/Pause — pausing jumps back to where playback started"),
                 ("F11", "Toggle fullscreen"),
+                ("Ctrl+M", "Toggle maximize/restore the window"),
+                ("Ctrl+Escape", "Quit the application"),
                 ("Click the ruler / a track lane", "Seek the playhead there"),
                 ("Zoom In / Zoom Out (toolbar)", "Zoom the timeline"),
                 (
