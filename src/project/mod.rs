@@ -680,6 +680,13 @@ impl Project {
                 && let Some(track) = self.track_mut(track_id) {
                     track.clips.retain(|c| c.id != id);
                 }
+            // Otherwise a cut clip stays in `selection` under a now-dead
+            // id — invisible (nothing on screen is drawn selected), but
+            // still non-empty, so a later Left/Right/Shift+Left/Right
+            // reads it as "a clip is selected", tries to nudge/jump that
+            // (nonexistent) clip via `find_clip_track`, and silently does
+            // nothing instead of falling back to moving the playhead.
+            self.selection.remove(&id);
         }
     }
 
@@ -694,6 +701,8 @@ impl Project {
                 && let Some(track) = self.track_mut(track_id) {
                     track.clips.retain(|c| c.id != id);
                 }
+            // See the matching comment in `cut_clips`.
+            self.selection.remove(&id);
         }
     }
 
@@ -836,6 +845,14 @@ impl Project {
     /// isn't strictly inside the clip. Bakes the clip's current trim state
     /// into both halves (any hidden trimmed-away audio is discarded).
     pub fn split_clip(&mut self, clip_id: ClipId, at_sample: u64) -> Option<(ClipId, ClipId)> {
+        self.push_undo();
+        self.split_clip_no_undo(clip_id, at_sample)
+    }
+
+    /// Same as `split_clip`, minus the undo checkpoint — for callers (e.g.
+    /// `select_range`) that need to perform several splits as one undoable
+    /// step instead of one per split.
+    fn split_clip_no_undo(&mut self, clip_id: ClipId, at_sample: u64) -> Option<(ClipId, ClipId)> {
         let track_id = self.find_clip_track(clip_id)?;
 
         let split_index = {
@@ -847,7 +864,6 @@ impl Project {
             (at_sample - clip.start_sample) as usize
         };
 
-        self.push_undo();
         let first_id = self.alloc_clip_id();
         let second_id = self.alloc_clip_id();
 
@@ -875,7 +891,66 @@ impl Project {
             channels,
         ));
 
+        // If the clip being split was itself selected, hand that selection
+        // off to both halves — otherwise it's left referring to a now-dead
+        // id (same hazard as an un-migrated cut/delete; see the comment in
+        // `cut_clips`), and `select_range`'s callers rely on this to carry
+        // a still-active whole-clip selection through a boundary split.
+        if self.selection.remove(&clip_id) {
+            self.selection.insert(first_id);
+            self.selection.insert(second_id);
+        }
+
         Some((first_id, second_id))
+    }
+
+    /// Commits a timeline "paint" range selection (see `timeline::draw_lane`)
+    /// spanning `[lo_sample, hi_sample)` across `track_ids`: every clip on
+    /// those tracks that only partly overlaps the range is split at
+    /// whichever of its edges fall inside the range, so the range lands on
+    /// exact clip boundaries, then every clip (whole or freshly split) that
+    /// now exactly occupies the range on its track becomes the new
+    /// selection — letting the ordinary clip-based cut/delete/effect flows
+    /// act on just that sub-range instead of whole clips. A no-op if the
+    /// range is empty.
+    pub fn select_range(&mut self, track_ids: &[TrackId], lo_sample: u64, hi_sample: u64) {
+        if lo_sample >= hi_sample {
+            return;
+        }
+        self.push_undo();
+        let mut selected = HashSet::new();
+        for &track_id in track_ids {
+            for clip_id in self.clip_ids_on_track(track_id) {
+                let Some((start, end)) = self
+                    .track(track_id)
+                    .and_then(|t| t.clips.iter().find(|c| c.id == clip_id))
+                    .map(|c| (c.start_sample, c.end_sample()))
+                else {
+                    continue;
+                };
+                let lo = lo_sample.max(start);
+                let hi = hi_sample.min(end);
+                if lo >= hi {
+                    continue;
+                }
+                let mut working = clip_id;
+                if lo > start {
+                    let Some((_, second)) = self.split_clip_no_undo(working, lo) else {
+                        continue;
+                    };
+                    working = second;
+                }
+                if hi < end {
+                    let Some((first, _)) = self.split_clip_no_undo(working, hi) else {
+                        continue;
+                    };
+                    working = first;
+                }
+                selected.insert(working);
+            }
+        }
+        self.selection = selected;
+        self.selected_tracks.clear();
     }
 
     /// Multiplies a clip's (visible) samples by `factor` in place (e.g.

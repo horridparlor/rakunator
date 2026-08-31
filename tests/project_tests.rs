@@ -126,6 +126,85 @@ fn split_clip_rejects_points_at_or_outside_its_edges() {
 }
 
 #[test]
+fn select_range_carves_out_the_middle_of_a_clip() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.add_clip(track, "c".into(), 0, vec![1.0; 100]).unwrap();
+
+    project.select_range(&[track], 30, 70);
+
+    let clips = &project.track(track).unwrap().clips;
+    assert_eq!(clips.len(), 3);
+    assert_eq!(project.selection.len(), 1);
+    let selected_id = *project.selection.iter().next().unwrap();
+    let selected = clips.iter().find(|c| c.id == selected_id).unwrap();
+    assert_eq!(selected.start_sample, 30);
+    assert_eq!(selected.len_samples(), 40);
+}
+
+#[test]
+fn select_range_keeps_a_fully_covered_clip_whole() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    let clip_id = project.add_clip(track, "c".into(), 10, vec![1.0; 20]).unwrap();
+
+    project.select_range(&[track], 0, 100);
+
+    let clips = &project.track(track).unwrap().clips;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(project.selection, std::collections::HashSet::from([clip_id]));
+}
+
+#[test]
+fn select_range_spans_every_given_track() {
+    let mut project = project_with_one_track();
+    let track_a = project.tracks[0].id;
+    let track_b = project.add_track();
+    project.add_clip(track_a, "a".into(), 0, vec![1.0; 100]).unwrap();
+    project.add_clip(track_b, "b".into(), 0, vec![1.0; 100]).unwrap();
+
+    project.select_range(&[track_a, track_b], 20, 80);
+
+    assert_eq!(project.selection.len(), 2);
+    for id in &project.selection {
+        let track_id = project.find_clip_track(*id).unwrap();
+        let clip = project.track(track_id).unwrap().clips.iter().find(|c| c.id == *id).unwrap();
+        assert_eq!(clip.start_sample, 20);
+        assert_eq!(clip.len_samples(), 60);
+    }
+}
+
+#[test]
+fn select_range_ignores_tracks_outside_the_given_list() {
+    let mut project = project_with_one_track();
+    let track_a = project.tracks[0].id;
+    let track_b = project.add_track();
+    project.add_clip(track_b, "b".into(), 0, vec![1.0; 100]).unwrap();
+
+    project.select_range(&[track_a], 0, 100);
+
+    assert!(project.selection.is_empty());
+    assert_eq!(project.track(track_b).unwrap().clips.len(), 1);
+}
+
+#[test]
+fn select_range_undoes_as_a_single_step() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    project.add_clip(track, "c".into(), 0, vec![1.0; 100]).unwrap();
+
+    project.select_range(&[track], 30, 70);
+    assert_eq!(project.track(track).unwrap().clips.len(), 3);
+
+    project.undo();
+
+    let clips = &project.track(track).unwrap().clips;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].start_sample, 0);
+    assert_eq!(clips[0].len_samples(), 100);
+}
+
+#[test]
 fn cut_then_paste_round_trips_a_clip() {
     let mut project = project_with_one_track();
     let track = project.tracks[0].id;
@@ -139,6 +218,42 @@ fn cut_then_paste_round_trips_a_clip() {
     let clip = &project.track(track).unwrap().clips[0];
     assert_eq!(clip.start_sample, 100);
     assert_eq!(clip.len_samples(), 20);
+}
+
+#[test]
+fn cut_clips_drops_the_cut_ids_from_selection() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 10]).unwrap();
+    project.selection.insert(clip_id);
+
+    project.cut_clips(&[clip_id]);
+
+    assert!(project.selection.is_empty());
+}
+
+#[test]
+fn delete_clips_drops_the_deleted_ids_from_selection() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 10]).unwrap();
+    project.selection.insert(clip_id);
+
+    project.delete_clips(&[clip_id]);
+
+    assert!(project.selection.is_empty());
+}
+
+#[test]
+fn splitting_a_selected_clip_hands_the_selection_to_both_halves() {
+    let mut project = project_with_one_track();
+    let track = project.tracks[0].id;
+    let clip_id = project.add_clip(track, "c".into(), 0, vec![1.0; 100]).unwrap();
+    project.selection.insert(clip_id);
+
+    let (first, second) = project.split_clip(clip_id, 40).unwrap();
+
+    assert_eq!(project.selection, std::collections::HashSet::from([first, second]));
 }
 
 #[test]

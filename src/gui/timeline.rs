@@ -65,6 +65,12 @@ pub struct TimelineState {
     lane_left_x: Option<f32>,
     /// Where a Shift+drag marquee selection started, in screen space.
     marquee_anchor: Option<egui::Pos2>,
+    /// Where a Shift+drag "paint" range selection started, in screen space
+    /// — like `marquee_anchor`, but started on top of a clip (instead of
+    /// empty lane space) so it can carve out a precise sub-range of one or
+    /// more clips (see `Project::select_range`) rather than selecting whole
+    /// clips.
+    range_paint_anchor: Option<egui::Pos2>,
     /// Sample position of the clip edge a move/trim is currently snapped
     /// to, or that the pointer is merely hovering close enough to grab, if
     /// any — drawn as a yellow alignment line. Reset every frame (by the
@@ -91,6 +97,7 @@ impl Default for TimelineState {
             last_click: None,
             lane_left_x: None,
             marquee_anchor: None,
+            range_paint_anchor: None,
             snap_indicator: None,
             click_snap_flash: None,
             drag: None,
@@ -112,6 +119,12 @@ impl TimelineState {
     /// for drawing the live selection-rectangle overlay.
     pub fn marquee_anchor(&self) -> Option<egui::Pos2> {
         self.marquee_anchor
+    }
+
+    /// Where an in-progress Shift+drag "paint" range selection started, if
+    /// any — for drawing its live overlay (see `range_paint_rect`).
+    pub fn range_paint_anchor(&self) -> Option<egui::Pos2> {
+        self.range_paint_anchor
     }
 
     /// The sample position of the clip edge a move/trim is currently
@@ -427,6 +440,24 @@ fn snap_move_start_with_indicator(
     (new_start, None)
 }
 
+/// The on-screen rectangle a live Shift-drag "paint" range selection (see
+/// `draw_lane`) currently covers: horizontally snapped to the nearest clip
+/// edge/playhead within `SNAP_PX` (same as the selection its release will
+/// commit via `Project::select_range`), vertically spanning the raw drag
+/// extent — same convention `draw_marquee_overlay` uses for the older
+/// whole-clip marquee. `None` before the first lane has drawn.
+pub fn range_paint_rect(state: &TimelineState, anchor: egui::Pos2, current: egui::Pos2, snap_targets: &[u64]) -> Option<Rect> {
+    let lane_left = state.lane_left_x?;
+    let sample_for_x = |x: f32| (((x - lane_left) / state.px_per_sample) + state.scroll_x_samples).max(0.0) as u64;
+    let x_for = |s: u64| lane_left + (s as f32 - state.scroll_x_samples) * state.px_per_sample;
+
+    let s1 = snap_sample(sample_for_x(anchor.x) as i64, snap_targets, state.px_per_sample).max(0) as u64;
+    let s2 = snap_sample(sample_for_x(current.x) as i64, snap_targets, state.px_per_sample).max(0) as u64;
+    let (x0, x1) = (x_for(s1.min(s2)), x_for(s1.max(s2)));
+    let (y0, y1) = (anchor.y.min(current.y), anchor.y.max(current.y));
+    Some(Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)))
+}
+
 /// Ctrl+scroll (or Alt+scroll, in case Ctrl+scroll is grabbed by the window
 /// manager/remote-desktop client first) zooms the timeline, keeping the
 /// sample under the pointer fixed. Over the ruler, Shift+scroll pans it
@@ -694,23 +725,34 @@ pub fn draw_lane(
         }
 
         if response.drag_started() {
-            let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
-            let duplicate = ui.ctx().input(|i| i.modifiers.command);
-            let mode = if (pointer_x - x).abs() <= EDGE_GRAB_PX {
-                DragMode::TrimStart
-            } else if (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX {
-                DragMode::TrimEnd
+            let shift = ui.ctx().input(|i| i.modifiers.shift);
+            if shift {
+                // Shift+drag starting on a clip (rather than empty lane
+                // space, which starts the whole-clip marquee instead — see
+                // `lane_response.drag_started()` below) paints a precise
+                // time-range selection across whatever clips/tracks the
+                // drag covers, committed on release (see the
+                // `range_paint_anchor` handling further down).
+                state.range_paint_anchor = ui.ctx().pointer_interact_pos();
             } else {
-                DragMode::Move { duplicate }
-            };
-            let grab = ((pointer_x - x) / px_per_sample) as i64;
-            state.drag = Some(DragState {
-                clip_id: clip.id,
-                origin_track: track_id,
-                len_samples: clip.len_samples,
-                grab_offset_samples: grab,
-                mode,
-            });
+                let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
+                let duplicate = ui.ctx().input(|i| i.modifiers.command);
+                let mode = if (pointer_x - x).abs() <= EDGE_GRAB_PX {
+                    DragMode::TrimStart
+                } else if (pointer_x - (x + w)).abs() <= EDGE_GRAB_PX {
+                    DragMode::TrimEnd
+                } else {
+                    DragMode::Move { duplicate }
+                };
+                let grab = ((pointer_x - x) / px_per_sample) as i64;
+                state.drag = Some(DragState {
+                    clip_id: clip.id,
+                    origin_track: track_id,
+                    len_samples: clip.len_samples,
+                    grab_offset_samples: grab,
+                    mode,
+                });
+            }
         }
 
         if response.clicked() {
@@ -799,6 +841,32 @@ pub fn draw_lane(
                     }
                 }
             }
+
+        // Commits a Shift+drag "paint" range selection once it's released —
+        // only fires for the clip its drag actually started on (egui keeps
+        // reporting `drag_stopped()` against the originating widget
+        // regardless of where the pointer ends up, the same way a
+        // cross-track clip move does), same as the trim/move commit above.
+        if response.drag_stopped()
+            && let Some(anchor) = state.range_paint_anchor.take()
+            && let Some(current) = ui.ctx().pointer_interact_pos()
+        {
+            let s1 = snap_sample(sample_for_x(anchor.x) as i64, snap_targets, px_per_sample).max(0) as u64;
+            let s2 = snap_sample(sample_for_x(current.x) as i64, snap_targets, px_per_sample).max(0) as u64;
+            let (lo, hi) = (s1.min(s2), s1.max(s2));
+
+            let row1 = ((anchor.y - state.tracks_top_y) / TRACK_ROW_STEP).floor().max(0.0) as usize;
+            let row2 = ((current.y - state.tracks_top_y) / TRACK_ROW_STEP).floor().max(0.0) as usize;
+            let (lo_row, hi_row) = (row1.min(row2), row1.max(row2));
+            let tracks: Vec<TrackId> = all_track_ids
+                .iter()
+                .enumerate()
+                .filter(|(row, _)| *row >= lo_row && *row <= hi_row)
+                .map(|(_, id)| *id)
+                .collect();
+
+            project.select_range(&tracks, lo, hi);
+        }
 
         // While trimming this clip's edge, live-preview the clip actually
         // stretching/shrinking to the candidate boundary (rather than only

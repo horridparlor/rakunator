@@ -320,12 +320,14 @@ impl eframe::App for RakunatorApp {
                 let record_start_sample = self.record_start_sample.unwrap_or(0);
                 let record_preview_samples = &self.record_preview_samples;
 
-                // Every clip edge in the project, used by the timeline's
-                // move/trim snapping (and click-to-seek snapping — see
-                // `timeline::snap_click`) so clips can align to each
-                // other's start/end points across tracks. Computed once up
-                // front, ahead of the ruler, so both it and the lanes below
-                // share the same snapshot.
+                // Every clip edge in the project, plus the playhead (the
+                // timeline's "selection point") itself, used by the
+                // timeline's move/trim/range-paint snapping (and
+                // click-to-seek snapping — see `timeline::snap_click`) so
+                // clips — and paint-selection boundaries — can align to
+                // each other's start/end points across tracks, or to the
+                // playhead. Computed once up front, ahead of the ruler, so
+                // both it and the lanes below share the same snapshot.
                 let snap_targets: Vec<u64> = {
                     let project = project.lock().unwrap();
                     project
@@ -333,6 +335,7 @@ impl eframe::App for RakunatorApp {
                         .iter()
                         .flat_map(|t| &t.clips)
                         .flat_map(|c| [c.start_sample, c.end_sample()])
+                        .chain(std::iter::once(playhead))
                         .collect()
                 };
                 let content_end_sample = snap_targets.iter().copied().max().unwrap_or(0);
@@ -378,6 +381,7 @@ impl eframe::App for RakunatorApp {
                 });
 
                 draw_marquee_overlay(ui, timeline_state);
+                draw_range_paint_overlay(ui, timeline_state, &snap_targets);
                 draw_snap_indicator(ui, timeline_state, track_count);
 
                 ui.horizontal(|ui| {
@@ -417,6 +421,33 @@ fn draw_marquee_overlay(ui: &egui::Ui, timeline: &TimelineState) {
         rect,
         0.0,
         egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 170, 255)),
+        egui::StrokeKind::Middle,
+    );
+}
+
+/// Draws the live Shift+drag "paint" range-selection rectangle, if one is
+/// active — started by Shift-dragging on top of a clip (rather than empty
+/// lane space, which starts the whole-clip marquee above instead) to select
+/// a precise time range across whatever clips/tracks the drag covers, for
+/// cutting or applying effects to just that sub-range (see
+/// `Project::select_range`). Snapped horizontally to the nearest clip
+/// edge/playhead, same as the drag's eventual commit.
+fn draw_range_paint_overlay(ui: &egui::Ui, timeline: &TimelineState, snap_targets: &[u64]) {
+    let Some(anchor) = timeline.range_paint_anchor() else {
+        return;
+    };
+    let Some(current) = ui.ctx().pointer_interact_pos() else {
+        return;
+    };
+    let Some(rect) = timeline::range_paint_rect(timeline, anchor, current, snap_targets) else {
+        return;
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(230, 200, 40, 40));
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 200, 40)),
         egui::StrokeKind::Middle,
     );
 }
