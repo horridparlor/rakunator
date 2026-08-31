@@ -338,12 +338,13 @@ pub fn draw_horizontal_scrollbar(
     let thumb_w = (bar_w * visible_samples / total_samples).clamp(SCROLLBAR_MIN_THUMB_PX, bar_w);
     let track_w = (bar_w - thumb_w).max(0.0);
 
-    if response.dragged()
-        && let Some(pos) = response.interact_pointer_pos()
-        && track_w > 0.0
-    {
-        let rel = ((pos.x - thumb_w / 2.0 - rect.left()) / track_w).clamp(0.0, 1.0);
-        state.scroll_x_samples = rel * max_scroll;
+    // Moves relative to the drag's own pixel delta rather than snapping the
+    // thumb to the pointer's absolute position — otherwise grabbing the bar
+    // anywhere but the thumb's exact center would jump the view there
+    // before following the drag any further.
+    if response.dragged() && track_w > 0.0 && max_scroll > 0.0 {
+        let delta_scroll = response.drag_delta().x / track_w * max_scroll;
+        state.scroll_x_samples = (state.scroll_x_samples + delta_scroll).clamp(0.0, max_scroll);
     }
 
     let thumb_x = rect.left()
