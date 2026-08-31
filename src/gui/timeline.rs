@@ -1063,15 +1063,14 @@ fn draw_clip_rect(
         let mid_y = rect.center().y;
         let top_rect = Rect::from_min_max(rect.left_top(), egui::pos2(rect.right(), mid_y));
         let bottom_rect = Rect::from_min_max(egui::pos2(rect.left(), mid_y), rect.right_bottom());
-        let frames = samples.len() / 2;
-        let mut left = Vec::with_capacity(frames);
-        let mut right = Vec::with_capacity(frames);
-        for frame in samples.as_chunks::<2>().0 {
-            left.push(frame[0]);
-            right.push(frame[1]);
-        }
-        draw_waveform(painter, top_rect, &left, wave_color, vertical_zoom);
-        draw_waveform(painter, bottom_rect, &right, wave_color, vertical_zoom);
+        // Read left/right directly out of the interleaved buffer (stride 2)
+        // instead of de-interleaving into two fresh Vecs first — that copy
+        // used to run over the clip's *entire* sample count on every
+        // repaint regardless of zoom, unlike the bounded per-pixel scan
+        // below it, so a long high-sample-rate stereo clip re-copied
+        // millions of samples per frame while just idling on screen.
+        draw_waveform_strided(painter, top_rect, samples, 2, 0, wave_color, vertical_zoom);
+        draw_waveform_strided(painter, bottom_rect, samples, 2, 1, wave_color, vertical_zoom);
         painter.line_segment(
             [egui::pos2(rect.left(), mid_y), egui::pos2(rect.right(), mid_y)],
             Stroke::new(1.0, stroke_color.gamma_multiply(0.7)),
@@ -1156,7 +1155,27 @@ fn draw_hazard_stripes(painter: &egui::Painter, rect: Rect) {
 /// underlying audio — clamping to ±1.0 so an over-zoomed loud passage
 /// flattens at the top/bottom of `rect` instead of spilling past it.
 pub(super) fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32], color: Color32, vertical_zoom: f32) {
-    if samples.is_empty() || rect.width() < 1.0 {
+    draw_waveform_strided(painter, rect, samples, 1, 0, color, vertical_zoom);
+}
+
+/// Same bounded min/max envelope as `draw_waveform`, but reads channel
+/// `channel` of `channels`-interleaved `samples` directly (stride
+/// `channels`) rather than requiring a pre-extracted contiguous
+/// single-channel slice — so a stereo clip's L/R waveforms can be drawn
+/// straight out of its interleaved buffer without first copying the whole
+/// thing into two separate per-channel Vecs.
+fn draw_waveform_strided(
+    painter: &egui::Painter,
+    rect: Rect,
+    samples: &[f32],
+    channels: usize,
+    channel: usize,
+    color: Color32,
+    vertical_zoom: f32,
+) {
+    let channels = channels.max(1);
+    let frame_count = samples.len() / channels;
+    if frame_count == 0 || rect.width() < 1.0 {
         return;
     }
     const MAX_SAMPLES_SCANNED_PER_COLUMN: usize = 512;
@@ -1164,21 +1183,21 @@ pub(super) fn draw_waveform(painter: &egui::Painter, rect: Rect, samples: &[f32]
     let width_px = rect.width().round().max(1.0) as usize;
     let mid_y = rect.center().y;
     let half_h = rect.height() / 2.0 - 2.0;
-    let samples_per_px = samples.len() as f32 / width_px as f32;
+    let frames_per_px = frame_count as f32 / width_px as f32;
 
     for col in 0..width_px {
-        let start = ((col as f32) * samples_per_px) as usize;
-        let end = (((col + 1) as f32) * samples_per_px).ceil() as usize;
-        let end = end.clamp(start + 1, samples.len());
-        let start = start.min(samples.len() - 1);
-        let slice = &samples[start..end];
+        let start = ((col as f32) * frames_per_px) as usize;
+        let end = (((col + 1) as f32) * frames_per_px).ceil() as usize;
+        let end = end.clamp(start + 1, frame_count);
+        let start = start.min(frame_count - 1);
+        let span = end - start;
 
-        let step = (slice.len() / MAX_SAMPLES_SCANNED_PER_COLUMN).max(1);
+        let step = (span / MAX_SAMPLES_SCANNED_PER_COLUMN).max(1);
         let mut min_v = 0.0f32;
         let mut max_v = 0.0f32;
-        let mut i = 0;
-        while i < slice.len() {
-            let s = slice[i];
+        let mut i = start;
+        while i < end {
+            let s = samples[i * channels + channel];
             min_v = min_v.min(s);
             max_v = max_v.max(s);
             i += step;

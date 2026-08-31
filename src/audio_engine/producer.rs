@@ -39,9 +39,16 @@ pub fn spawn(
             {
                 let project = project.lock().unwrap();
                 let start = transport.position();
+                // Audibility and pan/volume gains can't change mid-chunk
+                // (the project lock is held for the whole chunk), so
+                // resolve them once per track here rather than redoing an
+                // `any_soloed` scan and, for mono tracks, a `cos`/`sin`
+                // pair per sample — that used to happen CHUNK_FRAMES times
+                // per chunk regardless.
+                let voices = resolve_voices(&project);
                 for (frame_idx, frame) in chunk.chunks_mut(channels).enumerate() {
                     let n = start + frame_idx as u64;
-                    let (left, right) = mix_frame_with_meters(&project, n, &meters);
+                    let (left, right) = mix_frame_with_meters(&project, &voices, n, &meters);
                     write_frame(frame, left, right);
                 }
             }
@@ -59,30 +66,59 @@ pub fn spawn(
     })
 }
 
-/// Mixes every audible track at sample index `n`, updating each track's
-/// live meter with its gained peak contribution along the way. Bottoms out
-/// in the same `is_audible`/`pan_gains`/`pan_balance_gains`/`track_frame`/
-/// `track_frame_stereo` primitives as `mix::mix_frame` (including its
-/// `channels >= 2` branch — a stereo track's actual left/right content,
-/// not just its left channel duplicated per `pan_gains`), so realtime
-/// playback can't drift from offline export.
-fn mix_frame_with_meters(project: &Project, n: u64, meters: &Meters) -> (f32, f32) {
+/// A track's resolved-once-per-chunk mix state: whether it's audible right
+/// now and its pan/volume gain pair, so the per-frame mix loop never
+/// recomputes an `any_soloed` scan or a gain (`cos`/`sin`, for a mono
+/// track) that can't have changed since the chunk started.
+struct Voice {
+    audible: bool,
+    left_gain: f32,
+    right_gain: f32,
+}
+
+/// Resolves every track's `Voice` for the chunk about to be mixed. Bottoms
+/// out in the same `is_audible`/`pan_gains`/`pan_balance_gains` primitives
+/// as `mix::mix_frame`, so realtime playback can't drift from offline
+/// export.
+fn resolve_voices(project: &Project) -> Vec<Voice> {
     let any_soloed = project.tracks.iter().any(|t| t.soloed);
+    project
+        .tracks
+        .iter()
+        .map(|track| {
+            let audible = mix::is_audible(track, any_soloed);
+            let (left_gain, right_gain) = if track.channels >= 2 {
+                mix::pan_balance_gains(track.pan_percent, track.volume)
+            } else {
+                mix::pan_gains(track.pan_percent, track.volume)
+            };
+            Voice { audible, left_gain, right_gain }
+        })
+        .collect()
+}
+
+/// Mixes every audible track at sample index `n`, using `voices` (this
+/// chunk's already-resolved audibility/gains) and updating each track's
+/// live meter with its gained peak contribution along the way. Bottoms out
+/// in the same `track_frame`/`track_frame_stereo` primitives as
+/// `mix::mix_frame` (including its `channels >= 2` branch — a stereo
+/// track's actual left/right content, not just its left channel duplicated
+/// per `pan_gains`), so realtime playback can't drift from offline export.
+fn mix_frame_with_meters(project: &Project, voices: &[Voice], n: u64, meters: &Meters) -> (f32, f32) {
     let mut left = 0.0f32;
     let mut right = 0.0f32;
     for (i, track) in project.tracks.iter().enumerate() {
-        if !mix::is_audible(track, any_soloed) {
+        let voice = &voices[i];
+        if !voice.audible {
             meters.reset(i);
             continue;
         }
         let (left_sample, right_sample) = if track.channels >= 2 {
             let (l, r) = mix::track_frame_stereo(track, n);
-            let (left_gain, right_gain) = mix::pan_balance_gains(track.pan_percent, track.volume);
-            (l * left_gain, r * right_gain)
+            (l * voice.left_gain, r * voice.right_gain)
         } else {
             let mono = mix::track_frame(track, n);
-            let (left_gain, right_gain) = mix::pan_gains(track.pan_percent, track.volume);
-            (mono * left_gain, mono * right_gain)
+            (mono * voice.left_gain, mono * voice.right_gain)
         };
         left += left_sample;
         right += right_sample;
@@ -133,7 +169,8 @@ mod tests {
         project.track_mut(track_id).unwrap().pan_percent = 100; // hard right
 
         let meters = Meters::new();
-        let (left, right) = mix_frame_with_meters(&project, 0, &meters);
+        let voices = resolve_voices(&project);
+        let (left, right) = mix_frame_with_meters(&project, &voices, 0, &meters);
         assert!(left.abs() < 1e-6, "hard-right pan should silence the left channel, got {left}");
         assert!((right - (-1.0)).abs() < 1e-6, "right channel should pass its actual content through, got {right}");
     }
