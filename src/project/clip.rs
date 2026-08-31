@@ -100,6 +100,19 @@ impl Clip {
         self.window_samples(self.source_offset, self.length_samples)
     }
 
+    /// A cheap (`Arc` clone — O(1), no sample data copied) handle to this
+    /// clip's raw source buffer, paired with the currently visible
+    /// (post-trim) window's index range within it. Lets callers snapshot a
+    /// clip every GUI frame (e.g. for waveform drawing) without copying its
+    /// potentially huge sample data each time, unlike `visible_samples`,
+    /// which borrows `self` and can't outlive it.
+    pub fn visible_window_arc(&self) -> (Arc<[f32]>, std::ops::Range<usize>) {
+        let channels = self.channels as usize;
+        let start = (self.source_offset as usize * channels).min(self.source.len());
+        let end = (start + self.length_samples as usize * channels).min(self.source.len());
+        (Arc::clone(&self.source), start..end)
+    }
+
     /// The interleaved samples in an arbitrary source-relative window —
     /// generalizes `visible_samples` (equivalent to calling this with the
     /// current `source_offset`/`length_samples`) so the timeline can render

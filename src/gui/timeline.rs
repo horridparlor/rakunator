@@ -192,7 +192,20 @@ struct ClipSnapshot {
     start_sample: u64,
     len_samples: u64,
     channels: u8,
-    samples: Vec<f32>,
+    // An Arc clone into the clip's underlying source buffer plus the
+    // visible window's index range within it, not an owned copy — cloning
+    // this snapshot every GUI frame (needed so the interactive loop below
+    // never holds a live borrow of `project`) must stay O(1) regardless of
+    // the clip's length, or long imported files make playback repaint
+    // brutally expensive.
+    samples: std::sync::Arc<[f32]>,
+    samples_window: std::ops::Range<usize>,
+}
+
+impl ClipSnapshot {
+    fn visible_samples(&self) -> &[f32] {
+        &self.samples[self.samples_window.clone()]
+    }
 }
 
 enum ClipMenuAction {
@@ -607,13 +620,17 @@ pub fn draw_lane(
         .map(|t| {
             t.clips
                 .iter()
-                .map(|c| ClipSnapshot {
-                    id: c.id,
-                    name: c.name.clone(),
-                    start_sample: c.start_sample,
-                    len_samples: c.len_samples(),
-                    channels: c.channels(),
-                    samples: c.visible_samples().to_vec(),
+                .map(|c| {
+                    let (samples, samples_window) = c.visible_window_arc();
+                    ClipSnapshot {
+                        id: c.id,
+                        name: c.name.clone(),
+                        start_sample: c.start_sample,
+                        len_samples: c.len_samples(),
+                        channels: c.channels(),
+                        samples,
+                        samples_window,
+                    }
                 })
                 .collect()
         })
@@ -838,7 +855,7 @@ pub fn draw_lane(
             draw_rect,
             rect,
             &clip.name,
-            live_samples.as_deref().unwrap_or(&clip.samples),
+            live_samples.as_deref().unwrap_or(clip.visible_samples()),
             clip.channels,
             move_dragging,
             selected,
