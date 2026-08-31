@@ -807,6 +807,16 @@ pub fn draw_lane(
         if response.drag_stopped() && should_commit_drag
             && let Some(drag) = state.drag.take() {
                 let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
+                // When the dragged clip is part of a larger selection, every
+                // other selected clip rides along: moved/trimmed by the same
+                // delta the drag applies to this one, so painting a
+                // selection across multiple tracks and then dragging one
+                // clip (or one of its edges) drags the whole selection.
+                let riders: Vec<ClipId> = if project.selection.contains(&clip.id) {
+                    project.selection.iter().copied().filter(|&id| id != clip.id).collect()
+                } else {
+                    Vec::new()
+                };
                 match drag.mode {
                     DragMode::Move { duplicate } => {
                         let target = pointer_target_track.unwrap_or(drag.origin_track);
@@ -820,14 +830,21 @@ pub fn draw_lane(
                         .max(0) as u64;
                         if duplicate {
                             project.duplicate_clip(clip.id, target, new_start);
-                        } else {
+                        } else if riders.is_empty() {
                             project.move_clip(clip.id, target, new_start);
+                        } else {
+                            project.move_clip_group(clip.id, target, new_start, &riders);
                         }
                     }
                     DragMode::TrimStart => {
                         let raw_boundary = sample_for_x(pointer_x) as i64;
                         let boundary = snap_sample(raw_boundary, snap_targets, px_per_sample);
-                        project.trim_clip_start(clip.id, boundary - clip.start_sample as i64);
+                        let delta = boundary - clip.start_sample as i64;
+                        if riders.is_empty() {
+                            project.trim_clip_start(clip.id, delta);
+                        } else {
+                            project.trim_clip_start_group(clip.id, delta, &riders);
+                        }
                     }
                     DragMode::TrimEnd => {
                         let raw_boundary = sample_for_x(pointer_x) as i64;
@@ -837,7 +854,12 @@ pub fn draw_lane(
                         // convention): dragging the right edge leftward
                         // (boundary < end) should shorten, so it's end-minus-
                         // boundary, not boundary-minus-end.
-                        project.trim_clip_end(clip.id, end - boundary);
+                        let delta = end - boundary;
+                        if riders.is_empty() {
+                            project.trim_clip_end(clip.id, delta);
+                        } else {
+                            project.trim_clip_end_group(clip.id, delta, &riders);
+                        }
                     }
                 }
             }

@@ -1,7 +1,11 @@
 use crate::project::{self, Project};
 use std::path::PathBuf;
 
-use super::{toast, RakunatorApp};
+use super::{settings_persistence, toast, RakunatorApp};
+
+/// How many recently opened/saved projects the "Project File" dialog
+/// remembers and offers quick-load buttons for.
+const MAX_RECENT_PROJECTS: usize = 5;
 
 pub struct ProjectFileDialogState {
     pub open: bool,
@@ -11,6 +15,10 @@ pub struct ProjectFileDialogState {
     /// already exists — the confirm popup (`draw_overwrite_confirm`) reads
     /// this, and actually saves only once the user confirms.
     confirm_overwrite_path: Option<PathBuf>,
+    /// Most-recently-used first; capped at `MAX_RECENT_PROJECTS` and
+    /// persisted to `recent_projects.json` (see `settings_persistence`)
+    /// so it survives across restarts.
+    recent_projects: Vec<PathBuf>,
 }
 
 impl Default for ProjectFileDialogState {
@@ -23,8 +31,29 @@ impl Default for ProjectFileDialogState {
             path_text: default_path.display().to_string(),
             status: None,
             confirm_overwrite_path: None,
+            recent_projects: settings_persistence::load_recent_projects(),
         }
     }
+}
+
+/// Moves `path` to the front of the recent-projects list (removing any
+/// earlier occurrence first so it doesn't appear twice), caps the list at
+/// `MAX_RECENT_PROJECTS`, and persists it — called after every successful
+/// load or save.
+fn remember_recent(app: &mut RakunatorApp, path: &std::path::Path) {
+    let recent = &mut app.project_file_dialog.recent_projects;
+    recent.retain(|p| p != path);
+    recent.insert(0, path.to_path_buf());
+    recent.truncate(MAX_RECENT_PROJECTS);
+    settings_persistence::save_recent_projects(recent);
+}
+
+/// Drops `path` from the recent-projects list and persists the change —
+/// called when a quick-load target no longer exists on disk.
+fn forget_recent(app: &mut RakunatorApp, path: &std::path::Path) {
+    let recent = &mut app.project_file_dialog.recent_projects;
+    recent.retain(|p| p != path);
+    settings_persistence::save_recent_projects(recent);
 }
 
 /// Draws the "Project File" modal: a path field plus Save/Load buttons for
@@ -45,6 +74,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
 
     let mut browse_save = false;
     let mut browse_load = false;
+    let mut quick_load: Option<PathBuf> = None;
 
     egui::Window::new("Project File")
         .open(&mut open)
@@ -79,6 +109,20 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         });
         if let Some(status) = &state.status {
             ui.label(status);
+        }
+
+        if !state.recent_projects.is_empty() {
+            ui.add_space(12.0);
+            ui.separator();
+            ui.label("Recent projects:");
+            for path in state.recent_projects.clone() {
+                ui.horizontal(|ui| {
+                    if ui.button("Load").clicked() {
+                        quick_load = Some(path.clone());
+                    }
+                    ui.label(display_file_name(&path)).on_hover_text(path.display().to_string());
+                });
+            }
         }
 
         // This dialog's content is naturally shorter than a manually
@@ -121,6 +165,16 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             app.project_file_dialog.confirm_overwrite_path = Some(path);
         } else {
             do_save(app, &path);
+        }
+    }
+
+    if let Some(path) = quick_load {
+        if path.exists() {
+            app.project_file_dialog.path_text = path.display().to_string();
+            do_load(app, &path);
+        } else {
+            forget_recent(app, &path);
+            toast::show(app, format!("{} no longer exists — removed from recent list", display_file_name(&path)));
         }
     }
 
@@ -208,6 +262,7 @@ fn do_load(app: &mut RakunatorApp, path: &std::path::Path) {
             app.project_name = file_stem(path);
             app.project_file_dialog.status = None;
             app.project_file_dialog.open = false;
+            remember_recent(app, path);
             toast::show(app, format!("Loaded {}", display_file_name(path)));
         }
         Err(e) => {
@@ -230,6 +285,7 @@ fn do_save(app: &mut RakunatorApp, path: &std::path::Path) {
             app.project_name = file_stem(path);
             app.project_file_dialog.status = None;
             app.project_file_dialog.open = false;
+            remember_recent(app, path);
             toast::show(app, format!("Saved {}", display_file_name(path)));
         }
         Err(e) => {

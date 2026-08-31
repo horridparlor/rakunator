@@ -588,10 +588,14 @@ impl Project {
     /// Moves an existing clip to a new position, possibly on a different
     /// track. Used by the timeline's clip-drag interaction.
     pub fn move_clip(&mut self, clip_id: ClipId, target_track: TrackId, new_start: u64) {
+        self.push_undo();
+        self.move_clip_inner(clip_id, target_track, new_start);
+    }
+
+    fn move_clip_inner(&mut self, clip_id: ClipId, target_track: TrackId, new_start: u64) {
         let Some(origin_track) = self.find_clip_track(clip_id) else {
             return;
         };
-        self.push_undo();
         let Some(origin) = self.track_mut(origin_track) else {
             return;
         };
@@ -608,9 +612,43 @@ impl Project {
         }
     }
 
+    /// Moves `clip_id` to `(target_track, new_start)` — same as `move_clip`
+    /// — then shifts every clip in `riders` by the same time delta on its
+    /// own track, so dragging one clip in a multi-selection carries the
+    /// rest of the selection along with it. One undo step for the whole
+    /// group.
+    pub fn move_clip_group(&mut self, clip_id: ClipId, target_track: TrackId, new_start: u64, riders: &[ClipId]) {
+        let Some(origin_track) = self.find_clip_track(clip_id) else {
+            return;
+        };
+        let Some(current_start) = self
+            .track(origin_track)
+            .and_then(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .map(|c| c.start_sample)
+        else {
+            return;
+        };
+        let delta = new_start as i64 - current_start as i64;
+        self.push_undo();
+        self.move_clip_inner(clip_id, target_track, new_start);
+        for &id in riders {
+            let Some(track_id) = self.find_clip_track(id) else { continue };
+            let Some(start) = self.track(track_id).and_then(|t| t.clips.iter().find(|c| c.id == id)).map(|c| c.start_sample)
+            else {
+                continue;
+            };
+            let new_start = (start as i64 + delta).max(0) as u64;
+            self.move_clip_inner(id, track_id, new_start);
+        }
+    }
+
     /// Trims a clip's left edge by `delta_samples` (positive shortens it).
     pub fn trim_clip_start(&mut self, clip_id: ClipId, delta_samples: i64) {
         self.push_undo();
+        self.trim_clip_start_inner(clip_id, delta_samples);
+    }
+
+    fn trim_clip_start_inner(&mut self, clip_id: ClipId, delta_samples: i64) {
         if let Some(track_id) = self.find_clip_track(clip_id)
             && let Some(track) = self.track_mut(track_id)
                 && let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
@@ -618,14 +656,42 @@ impl Project {
                 }
     }
 
+    /// Trims `clip_id`'s left edge by `delta_samples` — same as
+    /// `trim_clip_start` — then trims every clip in `riders` by the same
+    /// amount, so dragging one clip's edge in a multi-selection trims the
+    /// rest of the selection along with it. One undo step for the whole
+    /// group.
+    pub fn trim_clip_start_group(&mut self, clip_id: ClipId, delta_samples: i64, riders: &[ClipId]) {
+        self.push_undo();
+        self.trim_clip_start_inner(clip_id, delta_samples);
+        for &id in riders {
+            self.trim_clip_start_inner(id, delta_samples);
+        }
+    }
+
     /// Trims a clip's right edge by `delta_samples` (positive shortens it).
     pub fn trim_clip_end(&mut self, clip_id: ClipId, delta_samples: i64) {
         self.push_undo();
+        self.trim_clip_end_inner(clip_id, delta_samples);
+    }
+
+    fn trim_clip_end_inner(&mut self, clip_id: ClipId, delta_samples: i64) {
         if let Some(track_id) = self.find_clip_track(clip_id)
             && let Some(track) = self.track_mut(track_id)
                 && let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
                     clip.trim_end(delta_samples);
                 }
+    }
+
+    /// Trims `clip_id`'s right edge by `delta_samples` — same as
+    /// `trim_clip_end` — then trims every clip in `riders` by the same
+    /// amount. One undo step for the whole group.
+    pub fn trim_clip_end_group(&mut self, clip_id: ClipId, delta_samples: i64, riders: &[ClipId]) {
+        self.push_undo();
+        self.trim_clip_end_inner(clip_id, delta_samples);
+        for &id in riders {
+            self.trim_clip_end_inner(id, delta_samples);
+        }
     }
 
     /// Builds clipboard entries for `clip_ids`, anchored to the earliest
