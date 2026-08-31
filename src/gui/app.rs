@@ -396,6 +396,7 @@ impl eframe::App for RakunatorApp {
             export_dialog::draw(ui.ctx(), self);
             project_file_dialog::draw(ui.ctx(), self);
             toolbar::draw_effects_settings_dialog(ui.ctx(), self);
+            toolbar::draw_active_effect_dialog(ui.ctx(), self);
         }
         help_dialog::draw(ui.ctx(), self);
         let toast_active = toast::draw(ui.ctx(), self);
@@ -623,14 +624,16 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
 
     // Closes every currently-open dialog (Create Wave, Project File,
-    // Export Project, Edit Effect Steps, Help) — whichever happen to be
-    // open, since more than one can be up at once.
+    // Export Project, Edit Effect Steps, an effect's quick-edit modal,
+    // Help) — whichever happen to be open, since more than one can be up
+    // at once.
     let close_dialogs = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::W));
     if close_dialogs {
         app.wave_dialog.open = false;
         app.project_file_dialog.open = false;
         app.export_dialog.open = false;
         app.effects.close_settings();
+        app.effects.close_active_effect_dialog();
         app.help_open = false;
     }
 
@@ -697,10 +700,20 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     }
 
     if mute_range {
-        let mut project = app.project.lock().unwrap();
-        let targets = project.effect_targets();
-        for id in targets {
-            project.mute_range(id, 0, u64::MAX);
+        // Ctrl+L is Mute — but on a brand-new, still-empty project there's
+        // nothing to mute anyway, so it instead reloads the most recently
+        // opened/saved project (same target as the "Recent projects" list
+        // in "Project File..."), a quicker way back into whatever you were
+        // just working on than reopening that dialog by hand.
+        let is_empty = app.project.lock().unwrap().is_empty();
+        if is_empty {
+            project_file_dialog::load_last(ui.ctx(), app);
+        } else {
+            let mut project = app.project.lock().unwrap();
+            let targets = project.effect_targets();
+            for id in targets {
+                project.mute_range(id, 0, u64::MAX);
+            }
         }
     }
 

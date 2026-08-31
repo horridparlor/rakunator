@@ -269,6 +269,21 @@ pub fn save_as(ctx: &egui::Context, app: &mut RakunatorApp) {
     }
 }
 
+/// Loads the most recently opened/saved project (the front of the
+/// "Recent projects" list), if there is one — for the Ctrl+L shortcut,
+/// which falls back to this only while the current project is empty (see
+/// `Project::is_empty`), rather than overriding the Mute shortcut Ctrl+L
+/// otherwise runs. Toasts instead of doing nothing if the list is empty
+/// (nothing has ever been loaded/saved yet).
+pub fn load_last(ctx: &egui::Context, app: &mut RakunatorApp) {
+    let Some(path) = app.project_file_dialog.recent_projects.first().cloned() else {
+        toast::show(app, "No recent project to load");
+        return;
+    };
+    app.project_file_dialog.path_text = path.display().to_string();
+    start_load(ctx, app, &path);
+}
+
 /// Starts loading `path` as the project on a background thread — a
 /// "Loading ..." toast shows immediately, since a large project can take a
 /// visible moment to deserialize. `poll_result` picks up the outcome,

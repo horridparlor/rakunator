@@ -238,6 +238,14 @@ impl Project {
         }
     }
 
+    /// Whether every track in the project has zero clips — used to tell a
+    /// freshly-opened, never-touched project apart from one with actual
+    /// audio in it (e.g. so Ctrl+L can fall back to "load last project"
+    /// only when there's nothing here yet to mute).
+    pub fn is_empty(&self) -> bool {
+        self.tracks.iter().all(|t| t.clips.is_empty())
+    }
+
     fn snapshot(&self) -> ProjectSnapshot {
         ProjectSnapshot {
             sample_rate_hz: self.sample_rate_hz,

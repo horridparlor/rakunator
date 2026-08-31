@@ -6,14 +6,43 @@ use crate::project::trip_toggler::TripTogglerParams;
 use crate::project::{db_to_gain, ClipId, PanToggleDirection, PanToggleParams, RattleParams, TrackId};
 use serde::{Deserialize, Serialize};
 
+/// Each variant carries the exact step value that was actually used —
+/// whichever value was in the quick-edit dialog's field when OK was
+/// clicked, whether or not "Update steps" was checked — so Ctrl+R repeats
+/// that same value even when it was a one-off edit never committed as the
+/// new default.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LastEffect {
+    PitchUp(f32),
+    PitchDown(f32),
+    VolumeUp(f32),
+    VolumeDown(f32),
+    TempoUp(f32),
+    TempoDown(f32),
+}
+
+/// Which effect's "quick edit" modal (see `draw_active_effect_dialog`) is
+/// currently open, if any — set when an effect with tweakable step values
+/// is clicked in the Effects menu, instead of that click applying the
+/// effect immediately.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActiveEffectDialog {
     PitchUp,
     PitchDown,
     VolumeUp,
     VolumeDown,
+    AdjustableFadeIn,
+    AdjustableFadeOut,
+    FadeToggle,
     TempoUp,
     TempoDown,
+    Reverb,
+    Echo,
+    Distortion,
+    SlidingStretch,
+    PanToggle,
+    Rattle,
+    TripToggler,
 }
 
 /// Pitch/volume step sizes — Up and Down each have their own independent
@@ -233,6 +262,19 @@ pub struct EffectsState {
     editing_tt_fade_curve_adjust: f32,
     #[serde(skip)]
     editing_tt_start_high: bool,
+
+    /// Which effect's "quick edit" modal is currently open, if any — see
+    /// `ActiveEffectDialog`.
+    #[serde(skip)]
+    active_effect_dialog: Option<ActiveEffectDialog>,
+    /// The quick-edit modal's "Update steps" checkbox: whether OK should
+    /// also commit its `editing_*` value(s) back as the new defaults
+    /// (persisted), on top of applying the effect. Reset to unchecked
+    /// every time a modal opens — deliberately not sticky across effects
+    /// or re-openings, so remembering a default is always an explicit,
+    /// per-edit choice.
+    #[serde(skip)]
+    remember_as_default: bool,
 }
 
 impl Default for EffectsState {
@@ -364,6 +406,9 @@ impl Default for EffectsState {
             editing_tt_instant_low_fade_end_db: 4.0,
             editing_tt_fade_curve_adjust: 0.0,
             editing_tt_start_high: true,
+
+            active_effect_dialog: None,
+            remember_as_default: false,
         }
     }
 }
@@ -441,6 +486,13 @@ impl EffectsState {
     /// instead of touching the field directly.
     pub(super) fn close_settings(&mut self) {
         self.settings_open = false;
+    }
+
+    /// Closes the effect "quick edit" modal (see `ActiveEffectDialog`)
+    /// without applying it — same reasoning as `close_settings` above, for
+    /// the global Ctrl+W shortcut.
+    pub(super) fn close_active_effect_dialog(&mut self) {
+        self.active_effect_dialog = None;
     }
 }
 
@@ -568,37 +620,34 @@ fn draw_record_button(ui: &mut egui::Ui, app: &mut RakunatorApp) {
     }
 }
 
-/// Applies whichever of Pitch Up/Down or Volume Up/Down was last used (at
-/// its currently configured step) to the current effect targets. Used by
-/// the Ctrl+R "repeat last effect" shortcut.
+/// Applies whichever of Pitch Up/Down or Volume Up/Down was last used, at
+/// the exact value that was actually used at the time (see `LastEffect`),
+/// to the current effect targets. Used by the Ctrl+R "repeat last effect"
+/// shortcut.
 pub fn repeat_last_effect(app: &mut RakunatorApp) {
     let Some(last) = app.effects.last_effect else {
         return;
     };
     let targets = app.project.lock().unwrap().effect_targets();
     match last {
-        LastEffect::PitchUp => {
-            let step = app.effects.pitch_up_step;
+        LastEffect::PitchUp(step) => {
             apply_to_targets("Pitch Up", app, &targets, move |p, id| p.apply_pitch_shift(id, step));
         }
-        LastEffect::PitchDown => {
-            let step = app.effects.pitch_down_step;
+        LastEffect::PitchDown(step) => {
             apply_to_targets("Pitch Down", app, &targets, move |p, id| p.apply_pitch_shift(id, -step));
         }
-        LastEffect::VolumeUp => {
-            let factor = 10f32.powf(app.effects.volume_up_step_db / 20.0);
+        LastEffect::VolumeUp(step_db) => {
+            let factor = 10f32.powf(step_db / 20.0);
             apply_to_targets("Volume Up", app, &targets, move |p, id| p.apply_gain(id, factor));
         }
-        LastEffect::VolumeDown => {
-            let factor = 10f32.powf(-app.effects.volume_down_step_db / 20.0);
+        LastEffect::VolumeDown(step_db) => {
+            let factor = 10f32.powf(-step_db / 20.0);
             apply_to_targets("Volume Down", app, &targets, move |p, id| p.apply_gain(id, factor));
         }
-        LastEffect::TempoUp => {
-            let step = app.effects.tempo_up_step_percent;
+        LastEffect::TempoUp(step) => {
             apply_to_targets("Tempo Up", app, &targets, move |p, id| p.apply_tempo_shift(id, step));
         }
-        LastEffect::TempoDown => {
-            let step = app.effects.tempo_down_step_percent;
+        LastEffect::TempoDown(step) => {
             apply_to_targets("Tempo Down", app, &targets, move |p, id| p.apply_tempo_shift(id, -step));
         }
     }
@@ -625,8 +674,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Pitch Up (+{pitch_up_step:.1} semitone)")))
             .clicked()
         {
-            apply_to_targets("Pitch Up", app, &targets, move |p, id| p.apply_pitch_shift(id, pitch_up_step));
-            app.effects.last_effect = Some(LastEffect::PitchUp);
+            app.effects.editing_pitch_up = app.effects.pitch_up_step;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::PitchUp);
             ui.close();
         }
         if ui
@@ -636,8 +686,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            apply_to_targets("Pitch Down", app, &targets, move |p, id| p.apply_pitch_shift(id, -pitch_down_step));
-            app.effects.last_effect = Some(LastEffect::PitchDown);
+            app.effects.editing_pitch_down = app.effects.pitch_down_step;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::PitchDown);
             ui.close();
         }
         ui.separator();
@@ -645,9 +696,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Volume Up (+{volume_up_step:.1} dB)")))
             .clicked()
         {
-            let factor = 10f32.powf(volume_up_step / 20.0);
-            apply_to_targets("Volume Up", app, &targets, move |p, id| p.apply_gain(id, factor));
-            app.effects.last_effect = Some(LastEffect::VolumeUp);
+            app.effects.editing_volume_up = app.effects.volume_up_step_db;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::VolumeUp);
             ui.close();
         }
         if ui
@@ -657,9 +708,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let factor = 10f32.powf(-volume_down_step / 20.0);
-            apply_to_targets("Volume Down", app, &targets, move |p, id| p.apply_gain(id, factor));
-            app.effects.last_effect = Some(LastEffect::VolumeDown);
+            app.effects.editing_volume_down = app.effects.volume_down_step_db;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::VolumeDown);
             ui.close();
         }
         ui.separator();
@@ -691,9 +742,10 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let start_gain = db_to_gain(fade_in_a.min(fade_in_b));
-            let end_gain = db_to_gain(fade_in_a.max(fade_in_b));
-            apply_to_targets("Adjustable Fade In", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+            app.effects.editing_fade_in_a = app.effects.fade_in_point_a_db;
+            app.effects.editing_fade_in_b = app.effects.fade_in_point_b_db;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::AdjustableFadeIn);
             ui.close();
         }
         let fade_out_a = app.effects.fade_out_point_a_db;
@@ -709,9 +761,10 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let start_gain = db_to_gain(fade_out_a.max(fade_out_b));
-            let end_gain = db_to_gain(fade_out_a.min(fade_out_b));
-            apply_to_targets("Adjustable Fade Out", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+            app.effects.editing_fade_out_a = app.effects.fade_out_point_a_db;
+            app.effects.editing_fade_out_b = app.effects.fade_out_point_b_db;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::AdjustableFadeOut);
             ui.close();
         }
         ui.separator();
@@ -724,7 +777,9 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            apply_fade_toggle(app);
+            app.effects.editing_fade_toggle_starts_with_in = app.effects.fade_toggle_starts_with_in;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::FadeToggle);
             ui.close();
         }
         ui.separator();
@@ -734,16 +789,18 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             .add_enabled(enabled, egui::Button::new(format!("Tempo Up (+{tempo_up_step:.1}%)")))
             .clicked()
         {
-            apply_to_targets("Tempo Up", app, &targets, move |p, id| p.apply_tempo_shift(id, tempo_up_step));
-            app.effects.last_effect = Some(LastEffect::TempoUp);
+            app.effects.editing_tempo_up = app.effects.tempo_up_step_percent;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::TempoUp);
             ui.close();
         }
         if ui
             .add_enabled(enabled, egui::Button::new(format!("Tempo Down (-{tempo_down_step:.1}%)")))
             .clicked()
         {
-            apply_to_targets("Tempo Down", app, &targets, move |p, id| p.apply_tempo_shift(id, -tempo_down_step));
-            app.effects.last_effect = Some(LastEffect::TempoDown);
+            app.effects.editing_tempo_down = app.effects.tempo_down_step_percent;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::TempoDown);
             ui.close();
         }
         ui.separator();
@@ -761,26 +818,42 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Reverb")).clicked() {
-            let params = reverb_params(&app.effects);
-            apply_to_targets("Reverb", app, &targets, move |p, id| p.apply_reverb(id, &params));
+            app.effects.editing_reverb_room_size = app.effects.reverb_room_size;
+            app.effects.editing_reverb_reverberance = app.effects.reverb_reverberance;
+            app.effects.editing_reverb_hf_damping = app.effects.reverb_hf_damping;
+            app.effects.editing_reverb_tone_low = app.effects.reverb_tone_low;
+            app.effects.editing_reverb_tone_high = app.effects.reverb_tone_high;
+            app.effects.editing_reverb_wet_gain_db = app.effects.reverb_wet_gain_db;
+            app.effects.editing_reverb_dry_gain_db = app.effects.reverb_dry_gain_db;
+            app.effects.editing_reverb_stereo_width = app.effects.reverb_stereo_width;
+            app.effects.editing_reverb_pre_delay_ms = app.effects.reverb_pre_delay_ms;
+            app.effects.editing_reverb_wet_only = app.effects.reverb_wet_only;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::Reverb);
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Echo")).clicked() {
-            let delay = app.effects.echo_delay_seconds;
-            let decay = app.effects.echo_decay;
-            apply_to_targets("Echo", app, &targets, move |p, id| p.apply_echo(id, delay, decay));
+            app.effects.editing_echo_delay_seconds = app.effects.echo_delay_seconds;
+            app.effects.editing_echo_decay = app.effects.echo_decay;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::Echo);
             ui.close();
         }
         if ui.add_enabled(enabled, egui::Button::new("Distortion (Hard Clip)")).clicked() {
-            let drive = app.effects.distortion_drive_db;
-            let threshold = app.effects.distortion_threshold;
-            apply_to_targets("Hard Clip Distortion", app, &targets, move |p, id| p.apply_hard_clip_distortion(id, drive, threshold));
+            app.effects.editing_distortion_drive_db = app.effects.distortion_drive_db;
+            app.effects.editing_distortion_threshold = app.effects.distortion_threshold;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::Distortion);
             ui.close();
         }
         ui.separator();
         if ui.add_enabled(enabled, egui::Button::new("Sliding Stretch")).clicked() {
-            let params = sliding_stretch_params(&app.effects);
-            apply_to_targets("Sliding Stretch", app, &targets, move |p, id| p.apply_sliding_stretch(id, &params));
+            app.effects.editing_stretch_initial_tempo_percent = app.effects.stretch_initial_tempo_percent;
+            app.effects.editing_stretch_final_tempo_percent = app.effects.stretch_final_tempo_percent;
+            app.effects.editing_stretch_initial_pitch_semitones = app.effects.stretch_initial_pitch_semitones;
+            app.effects.editing_stretch_final_pitch_semitones = app.effects.stretch_final_pitch_semitones;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::SlidingStretch);
             ui.close();
         }
         ui.separator();
@@ -810,8 +883,11 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let params = pan_toggle_params(&app.effects);
-            apply_to_targets("Pan Toggle", app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
+            app.effects.editing_pan_toggle_high_db = app.effects.pan_toggle_high_db;
+            app.effects.editing_pan_toggle_low_db = app.effects.pan_toggle_low_db;
+            app.effects.editing_pan_toggle_direction = app.effects.pan_toggle_direction;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::PanToggle);
             ui.close();
         }
         if ui
@@ -824,8 +900,23 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let params = rattle_params(&app.effects);
-            apply_to_targets("Rattle", app, &targets, move |p, id| p.apply_rattle(id, &params));
+            app.effects.editing_rattle_pitch_up_semitones = app.effects.rattle_pitch_up_semitones;
+            app.effects.editing_rattle_pitch_down_semitones = app.effects.rattle_pitch_down_semitones;
+            app.effects.editing_rattle_tempo_x_percent = app.effects.rattle_tempo_x_percent;
+            app.effects.editing_rattle_tempo_y_percent = app.effects.rattle_tempo_y_percent;
+            app.effects.editing_rattle_fade_in_a_db = app.effects.rattle_fade_in_a_db;
+            app.effects.editing_rattle_fade_in_b_db = app.effects.rattle_fade_in_b_db;
+            app.effects.editing_rattle_stretch_initial_tempo_percent =
+                app.effects.rattle_stretch_initial_tempo_percent;
+            app.effects.editing_rattle_stretch_final_tempo_percent =
+                app.effects.rattle_stretch_final_tempo_percent;
+            app.effects.editing_rattle_stretch_initial_pitch_semitones =
+                app.effects.rattle_stretch_initial_pitch_semitones;
+            app.effects.editing_rattle_stretch_final_pitch_semitones =
+                app.effects.rattle_stretch_final_pitch_semitones;
+            app.effects.editing_rattle_repeat_count = app.effects.rattle_repeat_count;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::Rattle);
             ui.close();
         }
         if ui
@@ -838,15 +929,21 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             )
             .clicked()
         {
-            let base_params = trip_toggler_params(&app.effects);
-            let mut start_high = base_params.start_high;
-            let mut project = app.project.lock().unwrap();
-            for &id in &targets {
-                let params = TripTogglerParams { start_high, ..base_params.clone() };
-                project.apply_trip_toggler(id, &params);
-                start_high = !start_high;
-            }
-            drop(project);
+            app.effects.editing_tt_high_db = app.effects.tt_high_db;
+            app.effects.editing_tt_low_db = app.effects.tt_low_db;
+            app.effects.editing_tt_super_mode = app.effects.tt_super_mode;
+            app.effects.editing_tt_detail = app.effects.tt_detail;
+            app.effects.editing_tt_instant_shift = app.effects.tt_instant_shift;
+            app.effects.editing_tt_instant_high_gain_db = app.effects.tt_instant_high_gain_db;
+            app.effects.editing_tt_instant_low_gain_db = app.effects.tt_instant_low_gain_db;
+            app.effects.editing_tt_instant_high_fade_start_db = app.effects.tt_instant_high_fade_start_db;
+            app.effects.editing_tt_instant_high_fade_end_db = app.effects.tt_instant_high_fade_end_db;
+            app.effects.editing_tt_instant_low_fade_start_db = app.effects.tt_instant_low_fade_start_db;
+            app.effects.editing_tt_instant_low_fade_end_db = app.effects.tt_instant_low_fade_end_db;
+            app.effects.editing_tt_fade_curve_adjust = app.effects.tt_fade_curve_adjust;
+            app.effects.editing_tt_start_high = app.effects.tt_start_high;
+            app.effects.remember_as_default = false;
+            app.effects.active_effect_dialog = Some(ActiveEffectDialog::TripToggler);
             ui.close();
         }
         ui.separator();
@@ -917,91 +1014,95 @@ fn draw_effects_menu(ui: &mut egui::Ui, app: &mut RakunatorApp) {
     });
 }
 
-/// Builds a `ReverbParams` from the current (committed) Reverb settings in
-/// `EffectsState`.
+/// Builds a `ReverbParams` from the quick-edit/"Edit Effect Steps" dialogs'
+/// in-progress (`editing_*`) Reverb settings in `EffectsState`.
 fn reverb_params(effects: &EffectsState) -> ReverbParams {
     ReverbParams {
-        room_size: effects.reverb_room_size,
-        reverberance: effects.reverb_reverberance,
-        hf_damping: effects.reverb_hf_damping,
-        tone_low: effects.reverb_tone_low,
-        tone_high: effects.reverb_tone_high,
-        wet_gain_db: effects.reverb_wet_gain_db,
-        dry_gain_db: effects.reverb_dry_gain_db,
-        stereo_width: effects.reverb_stereo_width,
-        pre_delay_ms: effects.reverb_pre_delay_ms,
-        wet_only: effects.reverb_wet_only,
+        room_size: effects.editing_reverb_room_size,
+        reverberance: effects.editing_reverb_reverberance,
+        hf_damping: effects.editing_reverb_hf_damping,
+        tone_low: effects.editing_reverb_tone_low,
+        tone_high: effects.editing_reverb_tone_high,
+        wet_gain_db: effects.editing_reverb_wet_gain_db,
+        dry_gain_db: effects.editing_reverb_dry_gain_db,
+        stereo_width: effects.editing_reverb_stereo_width,
+        pre_delay_ms: effects.editing_reverb_pre_delay_ms,
+        wet_only: effects.editing_reverb_wet_only,
     }
 }
 
-/// Builds a `RampParams` from the current (committed) Sliding Stretch
-/// settings in `EffectsState`.
+/// Builds a `RampParams` from the quick-edit/"Edit Effect Steps" dialogs'
+/// in-progress (`editing_*`) Sliding Stretch settings in `EffectsState`.
 fn sliding_stretch_params(effects: &EffectsState) -> RampParams {
     RampParams {
-        initial_tempo_percent: effects.stretch_initial_tempo_percent,
-        final_tempo_percent: effects.stretch_final_tempo_percent,
-        initial_pitch_semitones: effects.stretch_initial_pitch_semitones,
-        final_pitch_semitones: effects.stretch_final_pitch_semitones,
+        initial_tempo_percent: effects.editing_stretch_initial_tempo_percent,
+        final_tempo_percent: effects.editing_stretch_final_tempo_percent,
+        initial_pitch_semitones: effects.editing_stretch_initial_pitch_semitones,
+        final_pitch_semitones: effects.editing_stretch_final_pitch_semitones,
     }
 }
 
-/// Builds a `RattleParams` from the current (committed) Rattle settings in
-/// `EffectsState` — its own Adjustable Fade In / Sliding Stretch values,
-/// independent of those effects' regular settings above.
+/// Builds a `RattleParams` from the quick-edit/"Edit Effect Steps" dialogs'
+/// in-progress (`editing_*`) Rattle settings in `EffectsState` — its own
+/// Adjustable Fade In / Sliding Stretch values, independent of those
+/// effects' regular settings above.
 fn rattle_params(effects: &EffectsState) -> RattleParams {
-    let fade_in_a = effects.rattle_fade_in_a_db;
-    let fade_in_b = effects.rattle_fade_in_b_db;
+    let fade_in_a = effects.editing_rattle_fade_in_a_db;
+    let fade_in_b = effects.editing_rattle_fade_in_b_db;
     RattleParams {
-        pitch_up_semitones: effects.rattle_pitch_up_semitones,
-        pitch_down_semitones: effects.rattle_pitch_down_semitones,
-        tempo_x_percent: effects.rattle_tempo_x_percent,
-        tempo_y_percent: effects.rattle_tempo_y_percent,
+        pitch_up_semitones: effects.editing_rattle_pitch_up_semitones,
+        pitch_down_semitones: effects.editing_rattle_pitch_down_semitones,
+        tempo_x_percent: effects.editing_rattle_tempo_x_percent,
+        tempo_y_percent: effects.editing_rattle_tempo_y_percent,
         fade_in_start_gain: db_to_gain(fade_in_a.min(fade_in_b)),
         fade_in_end_gain: db_to_gain(fade_in_a.max(fade_in_b)),
         stretch: RampParams {
-            initial_tempo_percent: effects.rattle_stretch_initial_tempo_percent,
-            final_tempo_percent: effects.rattle_stretch_final_tempo_percent,
-            initial_pitch_semitones: effects.rattle_stretch_initial_pitch_semitones,
-            final_pitch_semitones: effects.rattle_stretch_final_pitch_semitones,
+            initial_tempo_percent: effects.editing_rattle_stretch_initial_tempo_percent,
+            final_tempo_percent: effects.editing_rattle_stretch_final_tempo_percent,
+            initial_pitch_semitones: effects.editing_rattle_stretch_initial_pitch_semitones,
+            final_pitch_semitones: effects.editing_rattle_stretch_final_pitch_semitones,
         },
-        repeat_count: effects.rattle_repeat_count,
+        repeat_count: effects.editing_rattle_repeat_count,
     }
 }
 
-/// Builds a `PanToggleParams` from the current (committed) Pan Toggle
-/// settings in `EffectsState`.
+/// Builds a `PanToggleParams` from the quick-edit/"Edit Effect Steps"
+/// dialogs' in-progress (`editing_*`) Pan Toggle settings in `EffectsState`.
 fn pan_toggle_params(effects: &EffectsState) -> PanToggleParams {
     PanToggleParams {
-        high_db: effects.pan_toggle_high_db,
-        low_db: effects.pan_toggle_low_db,
-        direction: effects.pan_toggle_direction,
+        high_db: effects.editing_pan_toggle_high_db,
+        low_db: effects.editing_pan_toggle_low_db,
+        direction: effects.editing_pan_toggle_direction,
     }
 }
 
-/// Builds a `TripTogglerParams` from the current (committed) Trip Toggler
-/// settings in `EffectsState`.
+/// Builds a `TripTogglerParams` from the quick-edit/"Edit Effect Steps"
+/// dialogs' in-progress (`editing_*`) Trip Toggler settings in
+/// `EffectsState`.
 fn trip_toggler_params(effects: &EffectsState) -> TripTogglerParams {
     TripTogglerParams {
-        high_db: effects.tt_high_db,
-        low_db: effects.tt_low_db,
-        super_mode: effects.tt_super_mode,
-        detail: effects.tt_detail,
-        instant_shift: effects.tt_instant_shift,
-        instant_high_gain_db: effects.tt_instant_high_gain_db,
-        instant_low_gain_db: effects.tt_instant_low_gain_db,
-        instant_high_fade_start_db: effects.tt_instant_high_fade_start_db,
-        instant_high_fade_end_db: effects.tt_instant_high_fade_end_db,
-        instant_low_fade_start_db: effects.tt_instant_low_fade_start_db,
-        instant_low_fade_end_db: effects.tt_instant_low_fade_end_db,
-        fade_curve_adjust: effects.tt_fade_curve_adjust,
-        start_high: effects.tt_start_high,
+        high_db: effects.editing_tt_high_db,
+        low_db: effects.editing_tt_low_db,
+        super_mode: effects.editing_tt_super_mode,
+        detail: effects.editing_tt_detail,
+        instant_shift: effects.editing_tt_instant_shift,
+        instant_high_gain_db: effects.editing_tt_instant_high_gain_db,
+        instant_low_gain_db: effects.editing_tt_instant_low_gain_db,
+        instant_high_fade_start_db: effects.editing_tt_instant_high_fade_start_db,
+        instant_high_fade_end_db: effects.editing_tt_instant_high_fade_end_db,
+        instant_low_fade_start_db: effects.editing_tt_instant_low_fade_start_db,
+        instant_low_fade_end_db: effects.editing_tt_instant_low_fade_end_db,
+        fade_curve_adjust: effects.editing_tt_fade_curve_adjust,
+        start_high: effects.editing_tt_start_high,
     }
 }
 
 /// For each selected track, sorts its clips by `start_sample` and applies
-/// the adjustable fade-in/fade-out alternately (which one starts is set by
-/// `EffectsState::fade_toggle_starts_with_in`, editable in "Edit steps...").
-fn apply_fade_toggle(app: &mut RakunatorApp) {
+/// the adjustable fade-in/fade-out alternately — which one starts is given
+/// by `starts_with_in` (the quick-edit dialog's in-progress value; see
+/// `EffectsState::fade_toggle_starts_with_in` for the committed default,
+/// editable in "Edit steps...").
+fn apply_fade_toggle(app: &mut RakunatorApp, starts_with_in: bool) {
     let fade_in_a = app.effects.fade_in_point_a_db;
     let fade_in_b = app.effects.fade_in_point_b_db;
     let fade_in_start = db_to_gain(fade_in_a.min(fade_in_b));
@@ -1011,8 +1112,6 @@ fn apply_fade_toggle(app: &mut RakunatorApp) {
     let fade_out_b = app.effects.fade_out_point_b_db;
     let fade_out_start = db_to_gain(fade_out_a.max(fade_out_b));
     let fade_out_end = db_to_gain(fade_out_a.min(fade_out_b));
-
-    let starts_with_in = app.effects.fade_toggle_starts_with_in;
 
     let mut project = app.project.lock().unwrap();
     let track_ids: Vec<TrackId> = project.selected_tracks.iter().copied().collect();
@@ -1031,6 +1130,520 @@ fn apply_fade_toggle(app: &mut RakunatorApp) {
                 project.apply_adjustable_fade(clip_id, fade_out_start, fade_out_end);
             }
         }
+    }
+}
+
+/// The title of the effect currently open in the quick-edit dialog (see
+/// `draw_active_effect_dialog`) — also used as that `egui::Window`'s id.
+fn active_effect_dialog_title(dialog: ActiveEffectDialog) -> &'static str {
+    match dialog {
+        ActiveEffectDialog::PitchUp => "Pitch Up",
+        ActiveEffectDialog::PitchDown => "Pitch Down",
+        ActiveEffectDialog::VolumeUp => "Volume Up",
+        ActiveEffectDialog::VolumeDown => "Volume Down",
+        ActiveEffectDialog::AdjustableFadeIn => "Adjustable Fade In",
+        ActiveEffectDialog::AdjustableFadeOut => "Adjustable Fade Out",
+        ActiveEffectDialog::FadeToggle => "Fade Toggle",
+        ActiveEffectDialog::TempoUp => "Tempo Up",
+        ActiveEffectDialog::TempoDown => "Tempo Down",
+        ActiveEffectDialog::Reverb => "Reverb",
+        ActiveEffectDialog::Echo => "Echo",
+        ActiveEffectDialog::Distortion => "Distortion (Hard Clip)",
+        ActiveEffectDialog::SlidingStretch => "Sliding Stretch",
+        ActiveEffectDialog::PanToggle => "Pan Toggle",
+        ActiveEffectDialog::Rattle => "Rattle",
+        ActiveEffectDialog::TripToggler => "Trip Toggler",
+    }
+}
+
+/// Records `effect` as the one Ctrl+R should repeat, and persists it
+/// immediately — unlike the committed step defaults (only saved when
+/// "Update steps" is checked), the last-used effect is meant to survive a
+/// restart unconditionally, so every application of it writes straight
+/// through rather than waiting for some other save to carry it along.
+fn set_last_effect(app: &mut RakunatorApp, effect: LastEffect) {
+    app.effects.last_effect = Some(effect);
+    super::settings_persistence::save_effects_settings(&app.effects);
+}
+
+/// Applies the effect currently open in the quick-edit dialog, using its
+/// `editing_*` value(s) — the same logic each effect's Effects-menu button
+/// used to run directly on click, before clicking started opening this
+/// dialog (pre-filled from the committed values) instead.
+fn apply_active_effect(app: &mut RakunatorApp, dialog: ActiveEffectDialog) {
+    let targets = app.project.lock().unwrap().effect_targets();
+    match dialog {
+        ActiveEffectDialog::PitchUp => {
+            let step = app.effects.editing_pitch_up;
+            apply_to_targets("Pitch Up", app, &targets, move |p, id| p.apply_pitch_shift(id, step));
+            set_last_effect(app, LastEffect::PitchUp(step));
+        }
+        ActiveEffectDialog::PitchDown => {
+            let step = app.effects.editing_pitch_down;
+            apply_to_targets("Pitch Down", app, &targets, move |p, id| p.apply_pitch_shift(id, -step));
+            set_last_effect(app, LastEffect::PitchDown(step));
+        }
+        ActiveEffectDialog::VolumeUp => {
+            let step_db = app.effects.editing_volume_up;
+            let factor = 10f32.powf(step_db / 20.0);
+            apply_to_targets("Volume Up", app, &targets, move |p, id| p.apply_gain(id, factor));
+            set_last_effect(app, LastEffect::VolumeUp(step_db));
+        }
+        ActiveEffectDialog::VolumeDown => {
+            let step_db = app.effects.editing_volume_down;
+            let factor = 10f32.powf(-step_db / 20.0);
+            apply_to_targets("Volume Down", app, &targets, move |p, id| p.apply_gain(id, factor));
+            set_last_effect(app, LastEffect::VolumeDown(step_db));
+        }
+        ActiveEffectDialog::AdjustableFadeIn => {
+            let a = app.effects.editing_fade_in_a;
+            let b = app.effects.editing_fade_in_b;
+            let start_gain = db_to_gain(a.min(b));
+            let end_gain = db_to_gain(a.max(b));
+            apply_to_targets("Adjustable Fade In", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+        }
+        ActiveEffectDialog::AdjustableFadeOut => {
+            let a = app.effects.editing_fade_out_a;
+            let b = app.effects.editing_fade_out_b;
+            let start_gain = db_to_gain(a.max(b));
+            let end_gain = db_to_gain(a.min(b));
+            apply_to_targets("Adjustable Fade Out", app, &targets, move |p, id| p.apply_adjustable_fade(id, start_gain, end_gain));
+        }
+        ActiveEffectDialog::FadeToggle => {
+            apply_fade_toggle(app, app.effects.editing_fade_toggle_starts_with_in);
+        }
+        ActiveEffectDialog::TempoUp => {
+            let step = app.effects.editing_tempo_up;
+            apply_to_targets("Tempo Up", app, &targets, move |p, id| p.apply_tempo_shift(id, step));
+            set_last_effect(app, LastEffect::TempoUp(step));
+        }
+        ActiveEffectDialog::TempoDown => {
+            let step = app.effects.editing_tempo_down;
+            apply_to_targets("Tempo Down", app, &targets, move |p, id| p.apply_tempo_shift(id, -step));
+            set_last_effect(app, LastEffect::TempoDown(step));
+        }
+        ActiveEffectDialog::Reverb => {
+            let params = reverb_params(&app.effects);
+            apply_to_targets("Reverb", app, &targets, move |p, id| p.apply_reverb(id, &params));
+        }
+        ActiveEffectDialog::Echo => {
+            let delay = app.effects.editing_echo_delay_seconds;
+            let decay = app.effects.editing_echo_decay;
+            apply_to_targets("Echo", app, &targets, move |p, id| p.apply_echo(id, delay, decay));
+        }
+        ActiveEffectDialog::Distortion => {
+            let drive = app.effects.editing_distortion_drive_db;
+            let threshold = app.effects.editing_distortion_threshold;
+            apply_to_targets("Hard Clip Distortion", app, &targets, move |p, id| p.apply_hard_clip_distortion(id, drive, threshold));
+        }
+        ActiveEffectDialog::SlidingStretch => {
+            let params = sliding_stretch_params(&app.effects);
+            apply_to_targets("Sliding Stretch", app, &targets, move |p, id| p.apply_sliding_stretch(id, &params));
+        }
+        ActiveEffectDialog::PanToggle => {
+            let params = pan_toggle_params(&app.effects);
+            apply_to_targets("Pan Toggle", app, &targets, move |p, id| p.apply_pan_toggle(id, &params));
+        }
+        ActiveEffectDialog::Rattle => {
+            let params = rattle_params(&app.effects);
+            apply_to_targets("Rattle", app, &targets, move |p, id| p.apply_rattle(id, &params));
+        }
+        ActiveEffectDialog::TripToggler => {
+            let base_params = trip_toggler_params(&app.effects);
+            let mut start_high = base_params.start_high;
+            let mut project = app.project.lock().unwrap();
+            for &id in &targets {
+                let params = TripTogglerParams { start_high, ..base_params.clone() };
+                project.apply_trip_toggler(id, &params);
+                start_high = !start_high;
+            }
+        }
+    }
+}
+
+/// Copies the quick-edit dialog's `editing_*` value(s) for `dialog` back
+/// into the matching committed field(s) in `EffectsState` — same effect as
+/// editing them via "Edit steps..." and clicking its OK. Only run when the
+/// quick-edit dialog's "Update steps" checkbox is checked at OK; the
+/// caller is responsible for persisting afterwards.
+fn commit_effect_defaults(app: &mut RakunatorApp, dialog: ActiveEffectDialog) {
+    match dialog {
+        ActiveEffectDialog::PitchUp => app.effects.pitch_up_step = app.effects.editing_pitch_up,
+        ActiveEffectDialog::PitchDown => app.effects.pitch_down_step = app.effects.editing_pitch_down,
+        ActiveEffectDialog::VolumeUp => app.effects.volume_up_step_db = app.effects.editing_volume_up,
+        ActiveEffectDialog::VolumeDown => app.effects.volume_down_step_db = app.effects.editing_volume_down,
+        ActiveEffectDialog::AdjustableFadeIn => {
+            app.effects.fade_in_point_a_db = app.effects.editing_fade_in_a;
+            app.effects.fade_in_point_b_db = app.effects.editing_fade_in_b;
+        }
+        ActiveEffectDialog::AdjustableFadeOut => {
+            app.effects.fade_out_point_a_db = app.effects.editing_fade_out_a;
+            app.effects.fade_out_point_b_db = app.effects.editing_fade_out_b;
+        }
+        ActiveEffectDialog::FadeToggle => {
+            app.effects.fade_toggle_starts_with_in = app.effects.editing_fade_toggle_starts_with_in;
+        }
+        ActiveEffectDialog::TempoUp => app.effects.tempo_up_step_percent = app.effects.editing_tempo_up,
+        ActiveEffectDialog::TempoDown => app.effects.tempo_down_step_percent = app.effects.editing_tempo_down,
+        ActiveEffectDialog::Reverb => {
+            app.effects.reverb_room_size = app.effects.editing_reverb_room_size;
+            app.effects.reverb_reverberance = app.effects.editing_reverb_reverberance;
+            app.effects.reverb_hf_damping = app.effects.editing_reverb_hf_damping;
+            app.effects.reverb_tone_low = app.effects.editing_reverb_tone_low;
+            app.effects.reverb_tone_high = app.effects.editing_reverb_tone_high;
+            app.effects.reverb_wet_gain_db = app.effects.editing_reverb_wet_gain_db;
+            app.effects.reverb_dry_gain_db = app.effects.editing_reverb_dry_gain_db;
+            app.effects.reverb_stereo_width = app.effects.editing_reverb_stereo_width;
+            app.effects.reverb_pre_delay_ms = app.effects.editing_reverb_pre_delay_ms;
+            app.effects.reverb_wet_only = app.effects.editing_reverb_wet_only;
+        }
+        ActiveEffectDialog::Echo => {
+            app.effects.echo_delay_seconds = app.effects.editing_echo_delay_seconds;
+            app.effects.echo_decay = app.effects.editing_echo_decay;
+        }
+        ActiveEffectDialog::Distortion => {
+            app.effects.distortion_drive_db = app.effects.editing_distortion_drive_db;
+            app.effects.distortion_threshold = app.effects.editing_distortion_threshold;
+        }
+        ActiveEffectDialog::SlidingStretch => {
+            app.effects.stretch_initial_tempo_percent = app.effects.editing_stretch_initial_tempo_percent;
+            app.effects.stretch_final_tempo_percent = app.effects.editing_stretch_final_tempo_percent;
+            app.effects.stretch_initial_pitch_semitones = app.effects.editing_stretch_initial_pitch_semitones;
+            app.effects.stretch_final_pitch_semitones = app.effects.editing_stretch_final_pitch_semitones;
+        }
+        ActiveEffectDialog::PanToggle => {
+            app.effects.pan_toggle_high_db = app.effects.editing_pan_toggle_high_db;
+            app.effects.pan_toggle_low_db = app.effects.editing_pan_toggle_low_db;
+            app.effects.pan_toggle_direction = app.effects.editing_pan_toggle_direction;
+        }
+        ActiveEffectDialog::Rattle => {
+            app.effects.rattle_pitch_up_semitones = app.effects.editing_rattle_pitch_up_semitones;
+            app.effects.rattle_pitch_down_semitones = app.effects.editing_rattle_pitch_down_semitones;
+            app.effects.rattle_tempo_x_percent = app.effects.editing_rattle_tempo_x_percent;
+            app.effects.rattle_tempo_y_percent = app.effects.editing_rattle_tempo_y_percent;
+            app.effects.rattle_fade_in_a_db = app.effects.editing_rattle_fade_in_a_db;
+            app.effects.rattle_fade_in_b_db = app.effects.editing_rattle_fade_in_b_db;
+            app.effects.rattle_stretch_initial_tempo_percent =
+                app.effects.editing_rattle_stretch_initial_tempo_percent;
+            app.effects.rattle_stretch_final_tempo_percent =
+                app.effects.editing_rattle_stretch_final_tempo_percent;
+            app.effects.rattle_stretch_initial_pitch_semitones =
+                app.effects.editing_rattle_stretch_initial_pitch_semitones;
+            app.effects.rattle_stretch_final_pitch_semitones =
+                app.effects.editing_rattle_stretch_final_pitch_semitones;
+            app.effects.rattle_repeat_count = app.effects.editing_rattle_repeat_count;
+        }
+        ActiveEffectDialog::TripToggler => {
+            app.effects.tt_high_db = app.effects.editing_tt_high_db;
+            app.effects.tt_low_db = app.effects.editing_tt_low_db;
+            app.effects.tt_super_mode = app.effects.editing_tt_super_mode;
+            app.effects.tt_detail = app.effects.editing_tt_detail;
+            app.effects.tt_instant_shift = app.effects.editing_tt_instant_shift;
+            app.effects.tt_instant_high_gain_db = app.effects.editing_tt_instant_high_gain_db;
+            app.effects.tt_instant_low_gain_db = app.effects.editing_tt_instant_low_gain_db;
+            app.effects.tt_instant_high_fade_start_db = app.effects.editing_tt_instant_high_fade_start_db;
+            app.effects.tt_instant_high_fade_end_db = app.effects.editing_tt_instant_high_fade_end_db;
+            app.effects.tt_instant_low_fade_start_db = app.effects.editing_tt_instant_low_fade_start_db;
+            app.effects.tt_instant_low_fade_end_db = app.effects.editing_tt_instant_low_fade_end_db;
+            app.effects.tt_fade_curve_adjust = app.effects.editing_tt_fade_curve_adjust;
+            app.effects.tt_start_high = app.effects.editing_tt_start_high;
+        }
+    }
+}
+
+/// Draws the "quick edit" modal that opens when clicking an effect with
+/// tweakable step values in the Effects menu (see `draw_effects_menu`),
+/// instead of that click applying the effect immediately at its currently
+/// committed values. Pre-filled from those committed values via the same
+/// `editing_*` scratch fields the full "Edit Effect Steps" dialog uses,
+/// editable here, then applied on OK at whatever the field(s) end up
+/// holding. The "Update steps" checkbox additionally commits the edited
+/// value(s) back as the new defaults (persisted) — unchecked by default,
+/// so a one-off tweak here doesn't silently change the defaults unless
+/// asked.
+pub fn draw_active_effect_dialog(ctx: &egui::Context, app: &mut RakunatorApp) {
+    let Some(dialog) = app.effects.active_effect_dialog else {
+        return;
+    };
+
+    let mut open = true;
+    let mut ok = false;
+    let mut cancel = false;
+
+    egui::Window::new(active_effect_dialog_title(dialog))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
+        .show(ctx, |ui| {
+            match dialog {
+                ActiveEffectDialog::PitchUp => {
+                    egui::Grid::new("quick_pitch_up_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Pitch Up (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_pitch_up, 0.1..=12.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::PitchDown => {
+                    egui::Grid::new("quick_pitch_down_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Pitch Down (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_pitch_down, 0.1..=12.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::VolumeUp => {
+                    egui::Grid::new("quick_volume_up_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Volume Up (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_volume_up, 0.1..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::VolumeDown => {
+                    egui::Grid::new("quick_volume_down_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Volume Down (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_volume_down, 0.1..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::AdjustableFadeIn => {
+                    ui.label("Two dB points, in either order — the effect works out which is louder/quieter.");
+                    egui::Grid::new("quick_fade_in_grid").num_columns(3).show(ui, |ui| {
+                        ui.label("Fade In points (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_fade_in_a, -60.0..=24.0, 0.1);
+                        drag_value_scroll(ui, &mut app.effects.editing_fade_in_b, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::AdjustableFadeOut => {
+                    ui.label("Two dB points, in either order — the effect works out which is louder/quieter.");
+                    egui::Grid::new("quick_fade_out_grid").num_columns(3).show(ui, |ui| {
+                        ui.label("Fade Out points (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_fade_out_a, -60.0..=24.0, 0.1);
+                        drag_value_scroll(ui, &mut app.effects.editing_fade_out_b, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::FadeToggle => {
+                    ui.label("Which comes first on each selected track's earliest clip?");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, true, "Fade In first");
+                        ui.radio_value(&mut app.effects.editing_fade_toggle_starts_with_in, false, "Fade Out first");
+                    });
+                }
+                ActiveEffectDialog::TempoUp => {
+                    egui::Grid::new("quick_tempo_up_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Tempo Up (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tempo_up, 0.1..=200.0, 0.5);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::TempoDown => {
+                    egui::Grid::new("quick_tempo_down_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Tempo Down (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tempo_down, 0.1..=90.0, 0.5);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::Reverb => {
+                    egui::Grid::new("quick_reverb_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Room Size:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_room_size, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Reverberance:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_reverberance, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("HF Damping:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_hf_damping, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Tone Low:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_tone_low, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Tone High:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_tone_high, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Wet Gain (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_wet_gain_db, -60.0..=10.0, 0.5);
+                        ui.end_row();
+                        ui.label("Dry Gain (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_dry_gain_db, -60.0..=10.0, 0.5);
+                        ui.end_row();
+                        ui.label("Stereo Width:");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_stereo_width, 0.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Pre-Delay (ms):");
+                        drag_value_scroll(ui, &mut app.effects.editing_reverb_pre_delay_ms, 0.0..=500.0, 1.0);
+                        ui.end_row();
+                        ui.label("Wet Only:");
+                        ui.checkbox(&mut app.effects.editing_reverb_wet_only, "");
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::Echo => {
+                    egui::Grid::new("quick_echo_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Delay time (s):");
+                        drag_value_scroll(ui, &mut app.effects.editing_echo_delay_seconds, 0.001..=10.0, 0.05);
+                        ui.end_row();
+                        ui.label("Decay factor:");
+                        drag_value_scroll(ui, &mut app.effects.editing_echo_decay, 0.0..=2.0, 0.01);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::Distortion => {
+                    egui::Grid::new("quick_distortion_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Drive (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_distortion_drive_db, 0.0..=48.0, 0.5);
+                        ui.end_row();
+                        ui.label("Clip Threshold:");
+                        drag_value_scroll(ui, &mut app.effects.editing_distortion_threshold, 0.01..=1.0, 0.01);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::SlidingStretch => {
+                    ui.label("Ramps tempo/pitch from the clip's start to its end.");
+                    egui::Grid::new("quick_sliding_stretch_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Initial Tempo Change (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_stretch_initial_tempo_percent, -90.0..=500.0, 0.5);
+                        ui.end_row();
+                        ui.label("Final Tempo Change (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_stretch_final_tempo_percent, -90.0..=500.0, 0.5);
+                        ui.end_row();
+                        ui.label("Initial Pitch Shift (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_stretch_initial_pitch_semitones, -24.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Final Pitch Shift (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_stretch_final_pitch_semitones, -24.0..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::PanToggle => {
+                    ui.label("Splits a stereo clip's channels, fades one up and the other down.");
+                    ui.horizontal(|ui| {
+                        ui.label("Fade-in side:");
+                        ui.radio_value(&mut app.effects.editing_pan_toggle_direction, PanToggleDirection::Left, "Left");
+                        ui.radio_value(&mut app.effects.editing_pan_toggle_direction, PanToggleDirection::Right, "Right");
+                    });
+                    egui::Grid::new("quick_pan_toggle_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("High dB (fade-in end / fade-out start):");
+                        drag_value_scroll(ui, &mut app.effects.editing_pan_toggle_high_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Low dB (fade-in start / fade-out end):");
+                        drag_value_scroll(ui, &mut app.effects.editing_pan_toggle_low_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                    });
+                }
+                ActiveEffectDialog::Rattle => {
+                    ui.label("Own Adjustable Fade In / Sliding Stretch settings, separate from the ones above.");
+                    egui::Grid::new("quick_rattle_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Pitch Up (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_pitch_up_semitones, 0.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Pitch Down (semitones):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_pitch_down_semitones, 0.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Tempo +x% (first clip):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_tempo_x_percent, -90.0..=200.0, 0.5);
+                        ui.end_row();
+                        ui.label("Tempo -y% (second clip):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_tempo_y_percent, -90.0..=200.0, 0.5);
+                        ui.end_row();
+                        ui.label("Fade In points (dB):");
+                        ui.horizontal(|ui| {
+                            drag_value_scroll(ui, &mut app.effects.editing_rattle_fade_in_a_db, -60.0..=24.0, 0.1);
+                            drag_value_scroll(ui, &mut app.effects.editing_rattle_fade_in_b_db, -60.0..=24.0, 0.1);
+                        });
+                        ui.end_row();
+                        ui.label("Sliding Stretch Initial Tempo (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_initial_tempo_percent, -90.0..=500.0, 0.5);
+                        ui.end_row();
+                        ui.label("Sliding Stretch Final Tempo (%):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_final_tempo_percent, -90.0..=500.0, 0.5);
+                        ui.end_row();
+                        ui.label("Sliding Stretch Initial Pitch (st):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_initial_pitch_semitones, -24.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Sliding Stretch Final Pitch (st):");
+                        drag_value_scroll(ui, &mut app.effects.editing_rattle_stretch_final_pitch_semitones, -24.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Repeat Count (A+B clips):");
+                        drag_value_scroll_u32(ui, &mut app.effects.editing_rattle_repeat_count, 2..=128, 2.0);
+                        ui.end_row();
+                    });
+                    app.effects.editing_rattle_repeat_count = (app.effects.editing_rattle_repeat_count / 2).max(1) * 2;
+                }
+                ActiveEffectDialog::TripToggler => {
+                    ui.label("Finds clear low points and alternates a fade down/up across the segments.");
+                    ui.horizontal(|ui| {
+                        ui.label("Detection mode:");
+                        ui.radio_value(&mut app.effects.editing_tt_super_mode, false, "Basic (between hits)");
+                        ui.radio_value(&mut app.effects.editing_tt_super_mode, true, "Super (inside a hit's decay)");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Starts:");
+                        ui.radio_value(&mut app.effects.editing_tt_start_high, true, "High");
+                        ui.radio_value(&mut app.effects.editing_tt_start_high, false, "Low");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Shift mode:");
+                        ui.radio_value(&mut app.effects.editing_tt_instant_shift, false, "Gradual (pure fade)");
+                        ui.radio_value(&mut app.effects.editing_tt_instant_shift, true, "Instant (step + fade)");
+                    });
+                    egui::Grid::new("quick_trip_toggler_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Detail (detection fine-tune):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_detail, 0.01..=10.0, 0.05);
+                        ui.end_row();
+                        ui.label("Fade Curve Adjust (-100..100):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_fade_curve_adjust, -100.0..=100.0, 1.0);
+                        ui.end_row();
+                        ui.label("Gradual High dB:");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_high_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Gradual Low dB:");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_low_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Instant High Gain Step (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_gain_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Instant Low Gain Step (dB):");
+                        drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_gain_db, -60.0..=24.0, 0.1);
+                        ui.end_row();
+                        ui.label("Instant High Fade (dB):");
+                        ui.horizontal(|ui| {
+                            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_fade_start_db, -60.0..=24.0, 0.1);
+                            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_high_fade_end_db, -60.0..=24.0, 0.1);
+                        });
+                        ui.end_row();
+                        ui.label("Instant Low Fade (dB):");
+                        ui.horizontal(|ui| {
+                            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_fade_start_db, -60.0..=24.0, 0.1);
+                            drag_value_scroll(ui, &mut app.effects.editing_tt_instant_low_fade_end_db, -60.0..=24.0, 0.1);
+                        });
+                        ui.end_row();
+                    });
+                }
+            }
+
+            ui.add_space(12.0);
+            ui.checkbox(&mut app.effects.remember_as_default, "Update steps (remember these values as the default)");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    ok = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if ok {
+        apply_active_effect(app, dialog);
+        if app.effects.remember_as_default {
+            commit_effect_defaults(app, dialog);
+            super::settings_persistence::save_effects_settings(&app.effects);
+        }
+        app.effects.active_effect_dialog = None;
+    } else if cancel || !open {
+        app.effects.active_effect_dialog = None;
     }
 }
 

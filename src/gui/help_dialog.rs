@@ -181,7 +181,10 @@ fn help_sections() -> &'static [HelpSection] {
             title: "Fade & mute",
             rows: &[
                 ("Ctrl+F / Ctrl+Shift+F", "Fade in/out the selected track(s) or clip(s)"),
-                ("Ctrl+L", "Mute the selected track(s) or clip(s)"),
+                (
+                    "Ctrl+L",
+                    "Mute the selected track(s) or clip(s) — or, if the project is still empty (no clips at all yet), loads the most recently opened/saved project instead (see Files below)",
+                ),
                 (
                     "Adjustable Fade In/Out",
                     "Fade between two configurable dB points (Edit steps...) instead of the fixed silence\u{2194}full fades above",
@@ -205,7 +208,10 @@ fn help_sections() -> &'static [HelpSection] {
                     "Sliding Stretch",
                     "Ramps tempo % and pitch (semitones) independently from an initial value (clip start) to a final value (clip end); each knob is fully configurable in Edit steps...",
                 ),
-                ("Ctrl+R", "Repeat the last-used pitch/volume/tempo effect (not fade — it has its own shortcut)"),
+                (
+                    "Ctrl+R",
+                    "Repeat the last-used pitch/volume/tempo effect, at the exact value it was last applied with — remembered across restarts even if that value was never saved as the default (not fade — it has its own shortcut)",
+                ),
             ],
         },
         HelpSection {
@@ -304,7 +310,14 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Ctrl+S", "Save straight to the project's current file (or the default path, if it's never been saved)"),
                 ("Ctrl+Shift+S", "Save As — opens a native file picker, then saves to whatever location you choose"),
                 ("Export Project... (toolbar)", "Render the full mixdown to .wav/.mp3 under a name you choose"),
-                ("Ctrl+W", "Close any open dialogs (Create Wave, Project File, Export Project, Edit Effect Steps, Help)"),
+                (
+                    "Ctrl+L (on an empty project)",
+                    "Loads the most recently opened/saved project — the same target as the top of \"Recent projects\" in Project File... — since Mute (Ctrl+L's other job) has nothing to do yet",
+                ),
+                (
+                    "Ctrl+W",
+                    "Close any open dialogs (Create Wave, Project File, Export Project, Edit Effect Steps, an effect's quick-edit dialog, Help)",
+                ),
             ],
         },
     ]
