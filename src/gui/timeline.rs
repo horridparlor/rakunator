@@ -1180,12 +1180,27 @@ fn draw_waveform_strided(
     }
     const MAX_SAMPLES_SCANNED_PER_COLUMN: usize = 512;
 
-    let width_px = rect.width().round().max(1.0) as usize;
+    // `rect` is the clip's full width in pixels, which can be far wider
+    // than the screen once zoomed in close on a long clip (pixels-per-
+    // sample times sample count) even though only a sliver of it is
+    // actually scrolled into view. Loop only over the columns that fall
+    // within the current paint clip rect (the visible viewport egui
+    // already tracks) so drawing cost stays bounded by screen width
+    // instead of scaling with zoom level.
+    let visible = rect.intersect(painter.clip_rect());
+    if visible.width() < 1.0 {
+        return;
+    }
+
+    let full_width_px = rect.width();
     let mid_y = rect.center().y;
     let half_h = rect.height() / 2.0 - 2.0;
-    let frames_per_px = frame_count as f32 / width_px as f32;
+    let frames_per_px = frame_count as f32 / full_width_px;
 
-    for col in 0..width_px {
+    let col_start = (visible.left() - rect.left()).floor().max(0.0) as usize;
+    let col_end = ((visible.right() - rect.left()).ceil().max(col_start as f32 + 1.0)) as usize;
+
+    for col in col_start..col_end {
         let start = ((col as f32) * frames_per_px) as usize;
         let end = (((col + 1) as f32) * frames_per_px).ceil() as usize;
         let end = end.clamp(start + 1, frame_count);
