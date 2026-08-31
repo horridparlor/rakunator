@@ -1,11 +1,22 @@
 use crate::project::{self, Project};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use super::{settings_persistence, toast, RakunatorApp};
 
 /// How many recently opened/saved projects the "Project File" dialog
 /// remembers and offers quick-load buttons for.
 const MAX_RECENT_PROJECTS: usize = 5;
+
+/// Outcome of a background load/save (see `start_load`/`start_save`),
+/// picked up by `poll_result` once the thread that produced it finishes.
+enum PendingOp {
+    Loaded { path: PathBuf, project: Box<Project> },
+    LoadFailed { error: String },
+    Saved { path: PathBuf },
+    SaveFailed { error: String },
+}
 
 pub struct ProjectFileDialogState {
     pub open: bool,
@@ -19,6 +30,10 @@ pub struct ProjectFileDialogState {
     /// persisted to `recent_projects.json` (see `settings_persistence`)
     /// so it survives across restarts.
     recent_projects: Vec<PathBuf>,
+    /// Set by the background load/save thread when it finishes — polled
+    /// and turned into a project swap/toast (or a failure status) every
+    /// frame regardless of whether the dialog itself is still open.
+    op_result: Arc<Mutex<Option<PendingOp>>>,
 }
 
 impl Default for ProjectFileDialogState {
@@ -32,6 +47,7 @@ impl Default for ProjectFileDialogState {
             status: None,
             confirm_overwrite_path: None,
             recent_projects: settings_persistence::load_recent_projects(),
+            op_result: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -57,12 +73,15 @@ fn forget_recent(app: &mut RakunatorApp, path: &std::path::Path) {
 }
 
 /// Draws the "Project File" modal: a path field plus Save/Load buttons for
-/// `.raku` project files. Runs synchronously on the GUI thread — project
-/// sizes at this app's scale serialize fast enough that a background
-/// thread (as used for export) isn't worth the added complexity here. A
-/// successful Save/Save As/Load closes the dialog immediately and shows a
-/// toast, rather than lingering on an in-dialog status line.
+/// `.raku` project files. Save/Load run on a background thread (see
+/// `start_save`/`start_load`) so a large project doesn't freeze the GUI —
+/// a "Saving.../Loading..." toast shows immediately, and `poll_result`
+/// swaps it for "Saved/Loaded ..." (or a failure status) once the thread
+/// reports back. A successful Save/Save As/Load then closes the dialog
+/// immediately, rather than lingering on an in-dialog status line.
 pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
+    poll_result(app);
+
     if !app.project_file_dialog.open {
         return;
     }
@@ -142,7 +161,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     app.project_file_dialog.open = open;
 
     if browse_save {
-        save_as(app);
+        save_as(ctx, app);
     }
     // "Select..." loads immediately once a file is picked — there's no
     // separate "Load" button to press afterward.
@@ -155,7 +174,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         };
         if let Some(path) = dialog.pick_file() {
             app.project_file_dialog.path_text = path.display().to_string();
-            do_load(app, &path);
+            start_load(ctx, app, &path);
         }
     }
 
@@ -164,14 +183,14 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         if path.exists() {
             app.project_file_dialog.confirm_overwrite_path = Some(path);
         } else {
-            do_save(app, &path);
+            start_save(ctx, app, &path);
         }
     }
 
     if let Some(path) = quick_load {
         if path.exists() {
             app.project_file_dialog.path_text = path.display().to_string();
-            do_load(app, &path);
+            start_load(ctx, app, &path);
         } else {
             forget_recent(app, &path);
             toast::show(app, format!("{} no longer exists — removed from recent list", display_file_name(&path)));
@@ -182,7 +201,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
 
     if load {
         let path = PathBuf::from(&app.project_file_dialog.path_text);
-        do_load(app, &path);
+        start_load(ctx, app, &path);
     }
 }
 
@@ -214,7 +233,7 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
         });
 
     if overwrite {
-        do_save(app, &path);
+        start_save(ctx, app, &path);
         app.project_file_dialog.confirm_overwrite_path = None;
     } else if cancel {
         app.project_file_dialog.confirm_overwrite_path = None;
@@ -227,9 +246,9 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
 /// the Ctrl+S shortcut. Skips the overwrite-confirmation popup that the
 /// "Save" button goes through, since Ctrl+S always targets the project's
 /// own current file rather than an arbitrary new path.
-pub fn save_current(app: &mut RakunatorApp) {
+pub fn save_current(ctx: &egui::Context, app: &mut RakunatorApp) {
     let path = PathBuf::from(&app.project_file_dialog.path_text);
-    do_save(app, &path);
+    start_save(ctx, app, &path);
 }
 
 /// Opens a native "Save As" file picker and saves there once a location is
@@ -237,7 +256,7 @@ pub fn save_current(app: &mut RakunatorApp) {
 /// Skips our own overwrite-confirmation popup (unlike the typed-path
 /// "Save" button): the native dialog already asks to confirm overwriting
 /// an existing file itself.
-pub fn save_as(app: &mut RakunatorApp) {
+pub fn save_as(ctx: &egui::Context, app: &mut RakunatorApp) {
     let starting_dir = PathBuf::from(&app.project_file_dialog.path_text);
     let dialog = rfd::FileDialog::new().add_filter("Rakunator Project", &["raku"]);
     let dialog = match starting_dir.parent() {
@@ -246,52 +265,82 @@ pub fn save_as(app: &mut RakunatorApp) {
     };
     if let Some(path) = dialog.save_file() {
         app.project_file_dialog.path_text = path.display().to_string();
-        do_save(app, &path);
+        start_save(ctx, app, &path);
     }
 }
 
-/// Loads `path` as the project, replacing whatever's currently open, and
-/// closes the dialog immediately on success (unlike a save, there's no
-/// status line worth lingering on — the loaded project is now just what's
-/// on screen).
-fn do_load(app: &mut RakunatorApp, path: &std::path::Path) {
-    let now = timestamp();
-    match project::persistence::load_project(path) {
-        Ok(loaded) => {
-            replace_project(app, loaded);
-            app.project_name = file_stem(path);
-            app.project_file_dialog.status = None;
-            app.project_file_dialog.open = false;
-            remember_recent(app, path);
-            toast::show(app, format!("Loaded {}", display_file_name(path)));
-        }
-        Err(e) => {
-            app.project_file_dialog.status = Some(format!("Load failed at {now}: {e}"));
-        }
-    }
+/// Starts loading `path` as the project on a background thread — a
+/// "Loading ..." toast shows immediately, since a large project can take a
+/// visible moment to deserialize. `poll_result` picks up the outcome,
+/// replacing whatever project is currently open and closing the dialog on
+/// success (unlike a save, there's no status line worth lingering on — the
+/// loaded project is now just what's on screen).
+fn start_load(ctx: &egui::Context, app: &mut RakunatorApp, path: &std::path::Path) {
+    toast::show(app, format!("Loading {}...", display_file_name(path)));
+    let result = Arc::clone(&app.project_file_dialog.op_result);
+    let ctx = ctx.clone();
+    let path = path.to_path_buf();
+    thread::spawn(move || {
+        let outcome = match project::persistence::load_project(&path) {
+            Ok(project) => PendingOp::Loaded { path, project: Box::new(project) },
+            Err(error) => PendingOp::LoadFailed { error },
+        };
+        *result.lock().unwrap() = Some(outcome);
+        ctx.request_repaint();
+    });
 }
 
-/// Serializes the current project to `path` — the actual save, run either
-/// directly (the target didn't already exist) or after
-/// `draw_overwrite_confirm`. On success, closes the dialog immediately and
-/// shows a toast (rather than lingering on an in-dialog status line the
-/// way a failure does, below, since there's nothing left to look at once
-/// it's closed).
-fn do_save(app: &mut RakunatorApp, path: &std::path::Path) {
+/// Starts serializing the current project to `path` on a background
+/// thread — the actual save, kicked off either directly (the target
+/// didn't already exist) or after `draw_overwrite_confirm`. A "Saving ..."
+/// toast shows immediately; `poll_result` swaps it for "Saved ..." (and
+/// closes the dialog) once the thread finishes, or sets a failure status
+/// otherwise.
+fn start_save(ctx: &egui::Context, app: &mut RakunatorApp, path: &std::path::Path) {
+    toast::show(app, format!("Saving {}...", display_file_name(path)));
     let snapshot = app.project.lock().unwrap().clone();
-    let result = project::persistence::save_project(&snapshot, path);
-    match result {
-        Ok(()) => {
-            app.project_name = file_stem(path);
+    let result = Arc::clone(&app.project_file_dialog.op_result);
+    let ctx = ctx.clone();
+    let path = path.to_path_buf();
+    thread::spawn(move || {
+        let outcome = match project::persistence::save_project(&snapshot, &path) {
+            Ok(()) => PendingOp::Saved { path },
+            Err(error) => PendingOp::SaveFailed { error },
+        };
+        *result.lock().unwrap() = Some(outcome);
+        ctx.request_repaint();
+    });
+}
+
+/// Turns a just-finished background load/save into the actual project
+/// swap (load) or a completion toast, if one landed since the last frame.
+fn poll_result(app: &mut RakunatorApp) {
+    let outcome = app.project_file_dialog.op_result.lock().unwrap().take();
+    match outcome {
+        Some(PendingOp::Loaded { path, project }) => {
+            replace_project(app, *project);
+            app.project_name = file_stem(&path);
             app.project_file_dialog.status = None;
             app.project_file_dialog.open = false;
-            remember_recent(app, path);
-            toast::show(app, format!("Saved {}", display_file_name(path)));
+            remember_recent(app, &path);
+            toast::show(app, format!("Loaded {}", display_file_name(&path)));
         }
-        Err(e) => {
+        Some(PendingOp::LoadFailed { error }) => {
             let now = timestamp();
-            app.project_file_dialog.status = Some(format!("Save failed at {now}: {e}"));
+            app.project_file_dialog.status = Some(format!("Load failed at {now}: {error}"));
         }
+        Some(PendingOp::Saved { path }) => {
+            app.project_name = file_stem(&path);
+            app.project_file_dialog.status = None;
+            app.project_file_dialog.open = false;
+            remember_recent(app, &path);
+            toast::show(app, format!("Saved {}", display_file_name(&path)));
+        }
+        Some(PendingOp::SaveFailed { error }) => {
+            let now = timestamp();
+            app.project_file_dialog.status = Some(format!("Save failed at {now}: {error}"));
+        }
+        None => {}
     }
 }
 

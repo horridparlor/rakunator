@@ -302,8 +302,10 @@ pub fn draw_ruler(
 pub const SCROLLBAR_HEIGHT: f32 = 16.0;
 const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
 /// Extra scrollable room past the last clip, so there's somewhere to drop
-/// new content beyond the current end of the project.
-const SCROLLBAR_TAIL_SECONDS: f32 = 5.0;
+/// new content beyond the current end of the project. Expressed as a
+/// fraction of the visible viewport width so it scales with screen size
+/// and zoom level, instead of a fixed time span.
+const SCROLLBAR_TAIL_VIEWPORT_FRACTION: f32 = 0.75;
 
 /// Draws a always-visible horizontal scrollbar under the track list —
 /// drag it (from anywhere on the bar, not just the thumb) to scroll
@@ -313,7 +315,6 @@ pub fn draw_horizontal_scrollbar(
     ui: &mut egui::Ui,
     state: &mut TimelineState,
     content_end_sample: u64,
-    sample_rate_hz: u32,
 ) {
     let size = Vec2::new(ui.available_width().max(200.0), SCROLLBAR_HEIGHT);
     let (mut rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
@@ -326,7 +327,7 @@ pub fn draw_horizontal_scrollbar(
 
     let bar_w = rect.width();
     let visible_samples = (bar_w / state.px_per_sample).max(1.0);
-    let total_samples = (content_end_sample as f32 + sample_rate_hz as f32 * SCROLLBAR_TAIL_SECONDS)
+    let total_samples = (content_end_sample as f32 + visible_samples * SCROLLBAR_TAIL_VIEWPORT_FRACTION)
         .max(visible_samples);
     let max_scroll = (total_samples - visible_samples).max(0.0);
 

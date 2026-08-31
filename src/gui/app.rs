@@ -386,7 +386,7 @@ impl eframe::App for RakunatorApp {
 
                 ui.horizontal(|ui| {
                     ui.allocate_ui(egui::Vec2::new(HEADER_WIDTH, timeline::SCROLLBAR_HEIGHT), |_ui| {});
-                    timeline::draw_horizontal_scrollbar(ui, timeline_state, content_end_sample, sample_rate_hz);
+                    timeline::draw_horizontal_scrollbar(ui, timeline_state, content_end_sample);
                 });
             });
         });
@@ -655,9 +655,9 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         )
     });
     if save {
-        project_file_dialog::save_current(app);
+        project_file_dialog::save_current(ui.ctx(), app);
     } else if save_as {
-        project_file_dialog::save_as(app);
+        project_file_dialog::save_as(ui.ctx(), app);
     }
 
     if repeat_effect {
