@@ -309,8 +309,12 @@ const SCROLLBAR_TAIL_VIEWPORT_FRACTION: f32 = 0.75;
 
 /// Draws a always-visible horizontal scrollbar under the track list —
 /// drag it (from anywhere on the bar, not just the thumb) to scroll
-/// through the song. Shares `state`'s zoom/scroll with the ruler and every
-/// lane, so it stays in sync with them.
+/// through the song. A plain click with no movement is intentionally a
+/// no-op (only `dragged()`, not `clicked()`, moves the scroll position) —
+/// otherwise merely pressing down anywhere on the bar would jump the view
+/// there before the user has actually dragged it anywhere. Shares
+/// `state`'s zoom/scroll with the ruler and every lane, so it stays in
+/// sync with them.
 pub fn draw_horizontal_scrollbar(
     ui: &mut egui::Ui,
     state: &mut TimelineState,
@@ -334,7 +338,7 @@ pub fn draw_horizontal_scrollbar(
     let thumb_w = (bar_w * visible_samples / total_samples).clamp(SCROLLBAR_MIN_THUMB_PX, bar_w);
     let track_w = (bar_w - thumb_w).max(0.0);
 
-    if (response.dragged() || response.clicked())
+    if response.dragged()
         && let Some(pos) = response.interact_pointer_pos()
         && track_w > 0.0
     {
