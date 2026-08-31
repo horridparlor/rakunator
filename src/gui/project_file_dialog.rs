@@ -89,6 +89,14 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         ui.allocate_space(egui::vec2(0.0, ui.available_height()));
     });
 
+    // `open` only reflects the window's own close (X) button here — a
+    // successful browse/save/load below closes the dialog by setting
+    // `app.project_file_dialog.open = false` itself, so this assignment
+    // must land before those run, or it would clobber that `false` back to
+    // `true` (the bug that used to leave the dialog open after "Select..."
+    // or "Save as..." even though the file had already loaded/saved).
+    app.project_file_dialog.open = open;
+
     if browse_save {
         save_as(app);
     }
@@ -106,8 +114,6 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             do_load(app, &path);
         }
     }
-
-    app.project_file_dialog.open = open;
 
     if save {
         let path = PathBuf::from(&app.project_file_dialog.path_text);
