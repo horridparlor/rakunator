@@ -3,6 +3,7 @@ pub mod dynamics;
 pub mod eq;
 pub mod generate;
 pub mod import;
+pub mod metadata;
 pub mod noise_reduction;
 pub mod pan_toggle;
 pub mod persistence;
@@ -12,6 +13,7 @@ pub mod track;
 pub mod trip_toggler;
 
 pub use clip::{Clip, ClipId};
+pub use metadata::ProjectMetadata;
 pub use pan_toggle::{PanToggleDirection, PanToggleParams};
 pub use track::{Track, TrackId};
 
@@ -123,6 +125,9 @@ const MAX_UNDO_HISTORY: usize = 50;
 pub struct Project {
     pub sample_rate_hz: u32,
     pub tracks: Vec<Track>,
+    /// Export tag metadata (artist/title/album/etc.) — not touched by
+    /// undo/redo, same as `selection`/`selected_tracks` below.
+    pub metadata: ProjectMetadata,
     next_track_id: u32,
     next_clip_id: u32,
     /// Multi-clip selection (Shift+click toggles membership; a plain click
@@ -151,6 +156,7 @@ impl Clone for Project {
         Project {
             sample_rate_hz: self.sample_rate_hz,
             tracks: self.tracks.clone(),
+            metadata: self.metadata.clone(),
             next_track_id: self.next_track_id,
             next_clip_id: self.next_clip_id,
             selection: self.selection.clone(),
@@ -227,6 +233,7 @@ impl Project {
         Project {
             sample_rate_hz,
             tracks: Vec::new(),
+            metadata: ProjectMetadata::default(),
             next_track_id: 0,
             next_clip_id: 0,
             selection: HashSet::new(),

@@ -1,4 +1,4 @@
-use super::Project;
+use super::{Project, ProjectMetadata};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -10,6 +10,45 @@ use std::path::Path;
 struct SavedProject {
     sample_rate_hz: u32,
     tracks: Vec<SavedTrack>,
+    /// Absent from `.raku` files saved before export metadata existed —
+    /// `SavedMetadata::default()` matches `ProjectMetadata::default()` in
+    /// that case.
+    #[serde(default)]
+    metadata: SavedMetadata,
+}
+
+/// On-disk shape of `ProjectMetadata` — see `to_saved`/`from_saved` for the
+/// conversion. Kept separate from the runtime type for the same reason as
+/// `SavedProject`/`Project`.
+#[derive(Serialize, Deserialize)]
+struct SavedMetadata {
+    #[serde(default)]
+    export_file_name: String,
+    artist_name: String,
+    track_title: String,
+    album_title: String,
+    track_number: u32,
+    year: u32,
+    genre: String,
+    comments: String,
+    software: String,
+}
+
+impl Default for SavedMetadata {
+    fn default() -> Self {
+        let m = ProjectMetadata::default();
+        SavedMetadata {
+            export_file_name: m.export_file_name,
+            artist_name: m.artist_name,
+            track_title: m.track_title,
+            album_title: m.album_title,
+            track_number: m.track_number,
+            year: m.year,
+            genre: m.genre,
+            comments: m.comments,
+            software: m.software,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,6 +93,17 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
 fn to_saved(project: &Project) -> SavedProject {
     SavedProject {
         sample_rate_hz: project.sample_rate_hz,
+        metadata: SavedMetadata {
+            export_file_name: project.metadata.export_file_name.clone(),
+            artist_name: project.metadata.artist_name.clone(),
+            track_title: project.metadata.track_title.clone(),
+            album_title: project.metadata.album_title.clone(),
+            track_number: project.metadata.track_number,
+            year: project.metadata.year,
+            genre: project.metadata.genre.clone(),
+            comments: project.metadata.comments.clone(),
+            software: project.metadata.software.clone(),
+        },
         tracks: project
             .tracks
             .iter()
@@ -81,6 +131,17 @@ fn to_saved(project: &Project) -> SavedProject {
 
 fn from_saved(saved: SavedProject) -> Project {
     let mut project = Project::empty(saved.sample_rate_hz);
+    project.metadata = ProjectMetadata {
+        export_file_name: saved.metadata.export_file_name,
+        artist_name: saved.metadata.artist_name,
+        track_title: saved.metadata.track_title,
+        album_title: saved.metadata.album_title,
+        track_number: saved.metadata.track_number,
+        year: saved.metadata.year,
+        genre: saved.metadata.genre,
+        comments: saved.metadata.comments,
+        software: saved.metadata.software,
+    };
     for saved_track in saved.tracks {
         let track_id = project.add_track();
         if let Some(track) = project.track_mut(track_id) {

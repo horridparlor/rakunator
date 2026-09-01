@@ -1,13 +1,24 @@
 use crate::export;
+use crate::project::ProjectMetadata;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use super::{toast, RakunatorApp};
+use super::{project_file_dialog, toast, RakunatorApp};
 
 pub struct ExportDialogState {
     pub open: bool,
     file_name: String,
+    artist_name: String,
+    /// Prefilled from the project's current file name when the dialog opens
+    /// and no title has been set yet — see `open_for_project`.
+    track_title: String,
+    album_title: String,
+    track_number: u32,
+    year: u32,
+    genre: String,
+    comments: String,
+    software: String,
     /// Set instead of exporting immediately when the target `.wav`/`.mp3`
     /// already exists — the confirm popup reads this, and only starts the
     /// export once the user confirms.
@@ -22,9 +33,18 @@ pub struct ExportDialogState {
 
 impl Default for ExportDialogState {
     fn default() -> Self {
+        let metadata = ProjectMetadata::default();
         ExportDialogState {
             open: false,
             file_name: "Untitled Project".to_string(),
+            artist_name: metadata.artist_name,
+            track_title: metadata.track_title,
+            album_title: metadata.album_title,
+            track_number: metadata.track_number,
+            year: metadata.year,
+            genre: metadata.genre,
+            comments: metadata.comments,
+            software: metadata.software,
             confirm_overwrite: None,
             result: Arc::new(Mutex::new(None)),
         }
@@ -32,10 +52,26 @@ impl Default for ExportDialogState {
 }
 
 impl ExportDialogState {
-    /// Overrides the export filename, e.g. to default it to the current
-    /// project's saved/loaded name when the dialog is opened.
-    pub fn set_file_name(&mut self, name: String) {
-        self.file_name = name;
+    /// Populates the dialog from the current project — every field
+    /// (including the export "Name:") defaults to whatever's already
+    /// stored in the project's `metadata`, so a custom export name sticks
+    /// across dialog opens the same way the tag fields do. `export_file_name`
+    /// and Track Title/Album Title fall back to `project_name` (the last
+    /// saved/loaded `.raku`'s base name) only the first time they're still
+    /// unset. Called each time the "Export Project..." button opens the
+    /// dialog, so it always reflects the metadata actually saved with the
+    /// project rather than whatever was last typed into the dialog.
+    pub fn open_for_project(&mut self, project_name: Option<&str>, metadata: &ProjectMetadata) {
+        let name_fallback = project_name.unwrap_or(&self.file_name).to_string();
+        self.file_name = if metadata.export_file_name.is_empty() { name_fallback.clone() } else { metadata.export_file_name.clone() };
+        self.artist_name = metadata.artist_name.clone();
+        self.track_title = if metadata.track_title.is_empty() { name_fallback.clone() } else { metadata.track_title.clone() };
+        self.album_title = if metadata.album_title.is_empty() { name_fallback } else { metadata.album_title.clone() };
+        self.track_number = metadata.track_number;
+        self.year = metadata.year;
+        self.genre = metadata.genre.clone();
+        self.comments = metadata.comments.clone();
+        self.software = metadata.software.clone();
     }
 }
 
@@ -63,6 +99,44 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                 ui.label("Name:");
                 ui.add(egui::TextEdit::singleline(&mut app.export_dialog.file_name).desired_width(200.0));
             });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.label("Export tags (saved with the project):");
+            ui.horizontal(|ui| {
+                ui.label("Artist Name:");
+                ui.add(egui::TextEdit::singleline(&mut app.export_dialog.artist_name).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Track Title:");
+                ui.add(egui::TextEdit::singleline(&mut app.export_dialog.track_title).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Album Title:");
+                ui.add(egui::TextEdit::singleline(&mut app.export_dialog.album_title).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Track Number:");
+                ui.add(egui::DragValue::new(&mut app.export_dialog.track_number).range(1..=9999));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Year:");
+                ui.add(egui::DragValue::new(&mut app.export_dialog.year).range(0..=9999));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Genre:");
+                ui.add(egui::TextEdit::singleline(&mut app.export_dialog.genre).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Comments:");
+                ui.add(egui::TextEdit::multiline(&mut app.export_dialog.comments).desired_width(200.0).desired_rows(2));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Software:");
+                ui.add(egui::TextEdit::singleline(&mut app.export_dialog.software).desired_width(200.0));
+            });
+            ui.add_space(6.0);
+
             if ui.button("Export").clicked() {
                 do_export = true;
             }
@@ -78,16 +152,46 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     app.export_dialog.open = open;
 
     if do_export {
+        commit_metadata(app);
         let file_name = app.export_dialog.file_name.clone();
         let (wav_path, mp3_path) = export::export_paths(&file_name);
         if wav_path.exists() || mp3_path.exists() {
             app.export_dialog.confirm_overwrite = Some(file_name);
         } else {
-            start_export(ctx, app, file_name);
+            save_and_start_export(ctx, app, file_name);
         }
     }
 
     draw_overwrite_confirm(ctx, app);
+}
+
+/// Writes the dialog's tag fields into the project's `metadata` — called
+/// right before exporting, so the render/save/export below all see the
+/// same up-to-date values, and so they're what gets persisted the next
+/// time the project is saved.
+fn commit_metadata(app: &mut RakunatorApp) {
+    let d = &app.export_dialog;
+    let metadata = ProjectMetadata {
+        export_file_name: d.file_name.clone(),
+        artist_name: d.artist_name.clone(),
+        track_title: d.track_title.clone(),
+        album_title: d.album_title.clone(),
+        track_number: d.track_number,
+        year: d.year,
+        genre: d.genre.clone(),
+        comments: d.comments.clone(),
+        software: d.software.clone(),
+    };
+    app.project.lock().unwrap().metadata = metadata;
+}
+
+/// Saves the project (carrying the metadata `commit_metadata` just wrote)
+/// to its current file, then starts the actual mixdown/tag export — so the
+/// updated tags are on disk in the `.raku` file too, and reload with it the
+/// next time this project is opened and exported again.
+fn save_and_start_export(ctx: &egui::Context, app: &mut RakunatorApp, file_name: String) {
+    project_file_dialog::save_current(ctx, app);
+    start_export(ctx, app, file_name);
 }
 
 /// Turns a just-finished background export into a toast, if one landed
@@ -130,7 +234,7 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
         });
 
     if overwrite {
-        start_export(ctx, app, file_name);
+        save_and_start_export(ctx, app, file_name);
         app.export_dialog.confirm_overwrite = None;
     } else if cancel {
         app.export_dialog.confirm_overwrite = None;

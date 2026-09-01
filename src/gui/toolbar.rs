@@ -517,9 +517,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                 app.project_file_dialog.open = true;
             }
             if text_button(ui, "Export Project...").clicked() {
-                if let Some(name) = &app.project_name {
-                    app.export_dialog.set_file_name(name.clone());
-                }
+                let project_name = app.project_name.clone();
+                let metadata = app.project.lock().unwrap().metadata.clone();
+                app.export_dialog.open_for_project(project_name.as_deref(), &metadata);
                 app.export_dialog.open = true;
             }
             ui.separator();

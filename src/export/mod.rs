@@ -30,8 +30,8 @@ pub fn export_project(project: &Project, base_name: &str) {
 
     let (wav_path, mp3_path) = export_paths(base_name);
 
-    wav::write_wav(&wav_path, &interleaved);
-    mp3::write_mp3(&mp3_path, &interleaved);
+    wav::write_wav(&wav_path, &interleaved, &project.metadata);
+    mp3::write_mp3(&mp3_path, &interleaved, &project.metadata);
 
     println!("wrote {}", wav_path.display());
     println!("wrote {}", mp3_path.display());
