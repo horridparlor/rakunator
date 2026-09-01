@@ -306,10 +306,10 @@ fn help_sections() -> &'static [HelpSection] {
             rows: &[
                 ("Create Wave... (toolbar)", "Generate a sine/square/triangle/sawtooth clip, or import an audio file"),
                 ("Drag a .wav file onto the window", "Import it as a new track (stereo files import as a stereo track)"),
-                ("Project File... (toolbar)", "Save/Load a .raku project file, with a native file picker"),
+                ("Project File... (toolbar) / Ctrl+P", "Save/Load a .raku project file, with a native file picker"),
                 ("Ctrl+S", "Save straight to the project's current file (or the default path, if it's never been saved)"),
                 ("Ctrl+Shift+S", "Save As — opens a native file picker, then saves to whatever location you choose"),
-                ("Export Project... (toolbar)", "Render the full mixdown to .wav/.mp3 under a name you choose"),
+                ("Export Project... (toolbar) / Ctrl+E", "Render the full mixdown to .wav/.mp3 under a name you choose"),
                 (
                     "Ctrl+L (on an empty project)",
                     "Loads the most recently opened/saved project — the same target as the top of \"Recent projects\" in Project File... — since Mute (Ctrl+L's other job) has nothing to do yet",

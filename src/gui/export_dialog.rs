@@ -51,6 +51,17 @@ impl Default for ExportDialogState {
     }
 }
 
+/// Opens the "Export Project" dialog, populating it from the current
+/// project (see `ExportDialogState::open_for_project`) — shared by the
+/// toolbar's "Export Project..." button and the Ctrl+E shortcut so both
+/// open the dialog exactly the same way.
+pub fn open(app: &mut RakunatorApp) {
+    let project_name = app.project_name.clone();
+    let metadata = app.project.lock().unwrap().metadata.clone();
+    app.export_dialog.open_for_project(project_name.as_deref(), &metadata);
+    app.export_dialog.open = true;
+}
+
 impl ExportDialogState {
     /// Populates the dialog from the current project — every field
     /// (including the export "Name:") defaults to whatever's already

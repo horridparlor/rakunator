@@ -541,13 +541,14 @@ fn nudge_samples(app: &RakunatorApp) -> i64 {
 /// one or more tracks are selected instead, Ctrl+D duplicates each of them
 /// directly below itself (see `Project::duplicate_track`); Ctrl+F /
 /// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
-/// adds a new track; Ctrl+M toggles the window between maximized and
-/// restored; Ctrl+Escape quits the application; Left/Right nudges the
-/// selected clip(s) in time; plain Space toggles play/pause (resuming from
-/// wherever it was paused); plain S splits the selected clip(s) at the
-/// playhead. All keyboard handling is skipped while a text field (e.g. a
-/// track name) has focus, so typing a space or an "s" doesn't hijack the
-/// transport.
+/// adds a new track; Ctrl+P opens the "Project File..." dialog; Ctrl+E
+/// opens the "Export Project..." dialog; Ctrl+M toggles the window between
+/// maximized and restored; Ctrl+Escape quits the application; Left/Right
+/// nudges the selected clip(s) in time; plain Space toggles play/pause
+/// (resuming from wherever it was paused); plain S splits the selected
+/// clip(s) at the playhead. All keyboard handling is skipped while a text
+/// field (e.g. a track name) has focus, so typing a space or an "s" doesn't
+/// hijack the transport.
 fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
@@ -661,6 +662,19 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         project_file_dialog::save_current(ui.ctx(), app);
     } else if save_as {
         project_file_dialog::save_as(ui.ctx(), app);
+    }
+
+    let (open_project_file, open_export) = ui.ctx().input(|i| {
+        (
+            i.modifiers.command && i.key_pressed(egui::Key::P),
+            i.modifiers.command && i.key_pressed(egui::Key::E),
+        )
+    });
+    if open_project_file {
+        app.project_file_dialog.open = true;
+    }
+    if open_export {
+        export_dialog::open(app);
     }
 
     if repeat_effect {

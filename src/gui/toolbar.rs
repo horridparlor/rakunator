@@ -1,5 +1,5 @@
 use super::timeline::format_time;
-use super::{toast, RakunatorApp};
+use super::{export_dialog, toast, RakunatorApp};
 use crate::project::reverb::ReverbParams;
 use crate::project::stretch::RampParams;
 use crate::project::trip_toggler::TripTogglerParams;
@@ -517,10 +517,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                 app.project_file_dialog.open = true;
             }
             if text_button(ui, "Export Project...").clicked() {
-                let project_name = app.project_name.clone();
-                let metadata = app.project.lock().unwrap().metadata.clone();
-                app.export_dialog.open_for_project(project_name.as_deref(), &metadata);
-                app.export_dialog.open = true;
+                export_dialog::open(app);
             }
             ui.separator();
             draw_effects_menu(ui, app);
