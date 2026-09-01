@@ -94,6 +94,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     let mut browse_save = false;
     let mut browse_load = false;
     let mut quick_load: Option<PathBuf> = None;
+    let mut forget_click: Option<PathBuf> = None;
 
     egui::Window::new("Project File")
         .open(&mut open)
@@ -140,6 +141,16 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
                         quick_load = Some(path.clone());
                     }
                     ui.label(display_file_name(&path)).on_hover_text(path.display().to_string());
+                    // Right-aligned, red "forget" button — removes this
+                    // entry from the recent-projects list (and its
+                    // persisted file) without touching the project file
+                    // itself on disk.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let forget = egui::RichText::new("\u{2715}").color(egui::Color32::from_rgb(220, 60, 60));
+                        if ui.button(forget).on_hover_text("Forget this project").clicked() {
+                            forget_click = Some(path.clone());
+                        }
+                    });
                 });
             }
         }
@@ -195,6 +206,12 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             forget_recent(app, &path);
             toast::show(app, format!("{} no longer exists — removed from recent list", display_file_name(&path)));
         }
+    }
+
+    if let Some(path) = forget_click {
+        let name = display_file_name(&path);
+        forget_recent(app, &path);
+        toast::show(app, format!("Forgot {name}"));
     }
 
     draw_overwrite_confirm(ctx, app);
