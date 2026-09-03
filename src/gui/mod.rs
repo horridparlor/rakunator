@@ -1,4 +1,5 @@
 mod app;
+mod bethoven;
 mod export_dialog;
 mod help_dialog;
 pub mod icon;

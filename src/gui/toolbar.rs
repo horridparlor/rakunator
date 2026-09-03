@@ -513,6 +513,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             if text_button(ui, "Create Wave...").clicked() {
                 app.wave_dialog.open = true;
             }
+            if text_button(ui, "Bethoven...").clicked() {
+                app.bethoven.open = true;
+            }
             if text_button(ui, "Project File...").clicked() {
                 app.project_file_dialog.open = true;
             }

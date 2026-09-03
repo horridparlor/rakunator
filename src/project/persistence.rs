@@ -1,4 +1,5 @@
 use super::{Project, ProjectMetadata};
+use crate::bethoven::Melody;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -15,6 +16,9 @@ struct SavedProject {
     /// that case.
     #[serde(default)]
     metadata: SavedMetadata,
+    /// Absent from `.raku` files saved before Bethoven existed.
+    #[serde(default)]
+    melodies: Vec<Melody>,
 }
 
 /// On-disk shape of `ProjectMetadata` — see `to_saved`/`from_saved` for the
@@ -126,6 +130,7 @@ fn to_saved(project: &Project) -> SavedProject {
                     .collect(),
             })
             .collect(),
+        melodies: project.melodies.clone(),
     }
 }
 
@@ -162,6 +167,7 @@ fn from_saved(saved: SavedProject) -> Project {
             );
         }
     }
+    project.melodies = saved.melodies;
     // Rebuilding a loaded project shouldn't itself be undoable back to
     // an empty one.
     project.clear_undo_history();

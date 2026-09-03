@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::{
-    export_dialog, export_dialog::ExportDialogState, help_dialog, project_file_dialog,
-    project_file_dialog::ProjectFileDialogState, settings_persistence, timeline,
+    bethoven, bethoven::BethovenState, export_dialog, export_dialog::ExportDialogState, help_dialog,
+    project_file_dialog, project_file_dialog::ProjectFileDialogState, settings_persistence, timeline,
     timeline::TimelineState, toast, toolbar, toolbar::EffectsState, track_view, wave_dialog,
     wave_dialog::WaveDialogState, HEADER_WIDTH, ROW_HEIGHT, RULER_HEIGHT, TRACK_ROW_GAP,
     TRACK_ROW_STEP,
@@ -17,6 +17,7 @@ pub struct RakunatorApp {
     pub(super) engine: AudioEngine,
     pub(super) sample_rate_hz: u32,
     pub(super) wave_dialog: WaveDialogState,
+    pub(super) bethoven: BethovenState,
     pub(super) export_dialog: ExportDialogState,
     pub(super) project_file_dialog: ProjectFileDialogState,
     pub(super) timeline: TimelineState,
@@ -89,6 +90,7 @@ impl RakunatorApp {
             engine,
             sample_rate_hz,
             wave_dialog: WaveDialogState::default(),
+            bethoven: BethovenState::new(sample_rate_hz),
             export_dialog: ExportDialogState::default(),
             project_file_dialog: ProjectFileDialogState::default(),
             timeline: TimelineState::default(),
@@ -257,7 +259,11 @@ impl eframe::App for RakunatorApp {
         let recording = self.recording.is_some();
 
         if !recording {
-            handle_shortcuts(ui, self);
+            if self.bethoven.open {
+                bethoven::handle_shortcuts(ui, self);
+            } else {
+                handle_shortcuts(ui, self);
+            }
             handle_dropped_files(ui, self);
         }
 
@@ -393,6 +399,7 @@ impl eframe::App for RakunatorApp {
 
         if !recording {
             wave_dialog::draw(ui.ctx(), self);
+            bethoven::draw(ui.ctx(), self);
             export_dialog::draw(ui.ctx(), self);
             project_file_dialog::draw(ui.ctx(), self);
             toolbar::draw_effects_settings_dialog(ui.ctx(), self);
@@ -631,6 +638,7 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     let close_dialogs = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::W));
     if close_dialogs {
         app.wave_dialog.open = false;
+        app.bethoven.open = false;
         app.project_file_dialog.open = false;
         app.export_dialog.open = false;
         app.effects.close_settings();

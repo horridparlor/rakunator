@@ -316,8 +316,44 @@ fn help_sections() -> &'static [HelpSection] {
                 ),
                 (
                     "Ctrl+W",
-                    "Close any open dialogs (Create Wave, Project File, Export Project, Edit Effect Steps, an effect's quick-edit dialog, Help)",
+                    "Close any open dialogs (Create Wave, Bethoven, Project File, Export Project, Edit Effect Steps, an effect's quick-edit dialog, Help)",
                 ),
+            ],
+        },
+        HelpSection {
+            title: "Bethoven",
+            rows: &[
+                (
+                    "Bethoven... (toolbar)",
+                    "Open the piano-roll composer — its own scale-constrained note editor, decoupled from the main timeline",
+                ),
+                ("Click an empty scale row", "Add a note there, using the current default length/instrument"),
+                ("Click a note", "Select it (replacing the current selection)"),
+                ("Shift+Click a note", "Toggle it into/out of the current selection"),
+                ("Shift+Drag on empty space", "Marquee-select every note the rectangle touches"),
+                ("Drag a note's body", "Move the whole selection together"),
+                ("Drag a note's left/right edge", "Resize that note from that edge"),
+                ("Ctrl+C / Ctrl+V", "Copy / paste the selected notes"),
+                ("Ctrl+D", "Delete the selected notes (Bethoven-only rebind of the main app's Ctrl+D)"),
+                ("Alt+D", "Copy the selected note's length and instrument as the new defaults for notes you add next"),
+                ("Alt+R", "Reset the selected notes' volume and pan to their defaults"),
+                (
+                    "Scroll a selected note",
+                    "Louder/quieter (0-100%) — the note also gets brighter/fainter, never fully transparent",
+                ),
+                ("Shift+Scroll a selected note", "Pan left (scroll up) / right (scroll down)"),
+                ("Space, or the Play/Pause button", "Preview the active section — pausing returns to where Play started"),
+                ("BPM slider", "Sets the current melody's tempo"),
+                (
+                    "+ Section / scale & root pickers",
+                    "Add a section and pick its scale/root — the piano roll then only shows that scale's rows",
+                ),
+                ("Melody combo / New / Rename / Delete", "Save, switch between, or remove melodies saved with this project"),
+                (
+                    "Export to Project Track",
+                    "Render the whole melody (all sections, in order) onto a new, fully-editable track in the main project",
+                ),
+                ("Set instrument (toolbar)", "Assign Piano/Strings/Bass/Guitar/Synth/Drum/Snare/Hi-Hat to the selected notes"),
             ],
         },
     ]

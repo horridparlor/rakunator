@@ -17,6 +17,7 @@ pub use metadata::ProjectMetadata;
 pub use pan_toggle::{PanToggleDirection, PanToggleParams};
 pub use track::{Track, TrackId};
 
+use crate::bethoven::Melody;
 use std::collections::{HashMap, HashSet};
 
 /// Converts a decibel level to a linear amplitude gain (0 dB = 1.0), for
@@ -146,6 +147,9 @@ pub struct Project {
     clipboard: Vec<ClipboardEntry>,
     undo_stack: Vec<ProjectSnapshot>,
     redo_stack: Vec<ProjectSnapshot>,
+    /// Bethoven melodies saved with this project — not touched by
+    /// undo/redo, same as `metadata`/`selection` above.
+    pub melodies: Vec<Melody>,
 }
 
 /// Cloning a project (e.g. to export or save a snapshot) never carries its
@@ -165,6 +169,7 @@ impl Clone for Project {
             clipboard: self.clipboard.clone(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            melodies: self.melodies.clone(),
         }
     }
 }
@@ -242,7 +247,16 @@ impl Project {
             clipboard: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            melodies: Vec::new(),
         }
+    }
+
+    /// The id a newly created melody should use — one past the highest
+    /// existing melody id, or 0 if there are none (mirrors `alloc_clip_id`'s
+    /// gapless-except-for-deletion approach, but melodies have no dedicated
+    /// counter since `Project` doesn't otherwise persist one).
+    pub fn next_melody_id(&self) -> u32 {
+        self.melodies.iter().map(|m| m.id).max().map(|m| m + 1).unwrap_or(0)
     }
 
     /// Whether every track in the project has zero clips — used to tell a
