@@ -49,6 +49,7 @@ fn draw_melody_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut
             for (id, name) in ids {
                 if ui.selectable_label(app.bethoven.active_melody_id == Some(id), name).clicked() {
                     app.bethoven.active_melody_id = Some(id);
+                    project.last_melody_id = Some(id);
                     app.bethoven.active_section_id = None;
                     app.bethoven.selection.clear();
                     app.bethoven.mark_dirty();
@@ -61,6 +62,7 @@ fn draw_melody_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut
         let name = format!("Melody {}", project.melodies.len() + 1);
         project.melodies.push(Melody::new(id, name));
         app.bethoven.active_melody_id = Some(id);
+        project.last_melody_id = Some(id);
         app.bethoven.active_section_id = None;
         app.bethoven.selection.clear();
         app.bethoven.mark_dirty();
@@ -174,6 +176,9 @@ fn draw_section_tabs(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut Pr
     for (id, name) in sections {
         if ui.selectable_label(app.bethoven.active_section_id == Some(id), name).clicked() {
             app.bethoven.active_section_id = Some(id);
+            if let Some(melody) = app.bethoven.active_melody_mut(project) {
+                melody.last_section_id = Some(id);
+            }
             app.bethoven.selection.clear();
             app.bethoven.renaming_section = None;
             app.bethoven.mark_dirty();
@@ -333,6 +338,7 @@ fn draw_new_section_popup(ctx: &egui::Context, app: &mut RakunatorApp) {
         app.bethoven.record_undo(&project);
         if let Some(melody) = app.bethoven.active_melody_mut(&mut project) {
             let id = melody.add_section(draft.name, draft.root, draft.scale_index, melody::bars_to_ticks(draft.bars));
+            melody.last_section_id = Some(id);
             app.bethoven.active_section_id = Some(id);
         }
         app.bethoven.selection.clear();

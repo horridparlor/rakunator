@@ -150,6 +150,11 @@ pub struct Project {
     /// Bethoven melodies saved with this project — not touched by
     /// undo/redo, same as `metadata`/`selection` above.
     pub melodies: Vec<Melody>,
+    /// Which melody was open in Bethoven when this project was last worked
+    /// on — restored the next time the project is opened, instead of
+    /// always landing back on the first melody. Not touched by undo/redo,
+    /// same as `melodies` above.
+    pub last_melody_id: Option<u32>,
 }
 
 /// Cloning a project (e.g. to export or save a snapshot) never carries its
@@ -170,6 +175,7 @@ impl Clone for Project {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             melodies: self.melodies.clone(),
+            last_melody_id: self.last_melody_id,
         }
     }
 }
@@ -248,6 +254,7 @@ impl Project {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             melodies: Vec::new(),
+            last_melody_id: None,
         }
     }
 

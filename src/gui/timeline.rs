@@ -741,7 +741,13 @@ pub fn draw_lane(
                 // `range_paint_anchor` handling further down).
                 state.range_paint_anchor = ui.ctx().pointer_interact_pos();
             } else {
-                let pointer_x = ui.ctx().pointer_interact_pos().map(|p| p.x).unwrap_or(x);
+                // The *press* position, not wherever the pointer has
+                // drifted to by the time egui decides this is actually a
+                // drag (it only commits past a small movement threshold) —
+                // on a short clip those few pixels of drift could already
+                // be enough to land past an edge zone it actually started
+                // in, flipping move/trim right at the start of the drag.
+                let pointer_x = ui.ctx().input(|i| i.pointer.press_origin()).map(|p| p.x).unwrap_or(x);
                 let duplicate = ui.ctx().input(|i| i.modifiers.command);
                 let mode = if (pointer_x - x).abs() <= EDGE_GRAB_PX {
                     DragMode::TrimStart

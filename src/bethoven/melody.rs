@@ -207,6 +207,12 @@ pub struct Melody {
     /// note via Alt+D.
     pub default_note_length_ticks: u32,
     pub default_instrument: Instrument,
+    /// Which section was open in the piano roll when this melody was last
+    /// worked on — restored the next time the project is opened, instead
+    /// of always landing back on the first section. Absent from `.raku`
+    /// files saved before this existed.
+    #[serde(default)]
+    pub last_section_id: Option<u32>,
 }
 
 impl Melody {
@@ -218,8 +224,10 @@ impl Melody {
             sections: Vec::new(),
             default_note_length_ticks: PPQ,
             default_instrument: Instrument::Piano,
+            last_section_id: None,
         };
-        melody.add_section("Section 1".to_string(), 0, 0, bars_to_ticks(DEFAULT_SECTION_BARS));
+        let id = melody.add_section("Section 1".to_string(), 0, 0, bars_to_ticks(DEFAULT_SECTION_BARS));
+        melody.last_section_id = Some(id);
         melody
     }
 
@@ -285,6 +293,12 @@ pub fn render_melody(melody: &Melody, sample_rate_hz: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_melody_marks_its_own_section_as_last_open() {
+        let melody = Melody::new(0, "Test".into());
+        assert_eq!(melody.last_section_id, Some(melody.sections[0].id));
+    }
 
     #[test]
     fn add_move_resize_delete_notes() {

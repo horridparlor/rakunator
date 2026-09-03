@@ -77,6 +77,30 @@ fn loading_an_old_raku_file_with_no_melodies_field_still_works() {
     let _ = std::fs::remove_file(&path);
 
     assert!(loaded.melodies.is_empty());
+    assert_eq!(loaded.last_melody_id, None);
+}
+
+#[test]
+fn project_round_trips_which_melody_and_section_were_last_open() {
+    let mut project = Project::new(48_000);
+    let melody_a = Melody::new(project.next_melody_id(), "A".to_string());
+    project.melodies.push(melody_a);
+
+    let mut melody_b = Melody::new(project.next_melody_id(), "B".to_string());
+    let second_section = melody_b.add_section("Second".to_string(), 0, 0, melody::bars_to_ticks(4));
+    melody_b.last_section_id = Some(second_section);
+    let melody_b_id = melody_b.id;
+    project.melodies.push(melody_b);
+    project.last_melody_id = Some(melody_b_id);
+
+    let path = std::env::temp_dir().join(format!("rakunator_bethoven_last_open_{}.raku", std::process::id()));
+    save_project(&project, &path).expect("save should succeed");
+    let loaded = load_project(&path).expect("load should succeed");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.last_melody_id, Some(melody_b_id));
+    let loaded_b = loaded.melodies.iter().find(|m| m.id == melody_b_id).unwrap();
+    assert_eq!(loaded_b.last_section_id, Some(second_section));
 }
 
 #[test]

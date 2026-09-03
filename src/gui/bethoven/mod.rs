@@ -130,7 +130,14 @@ impl BethovenState {
             project.melodies.push(Melody::new(id, "Melody 1".to_string()));
         }
         if !self.active_melody_id.is_some_and(|id| project.melodies.iter().any(|m| m.id == id)) {
-            self.active_melody_id = project.melodies.first().map(|m| m.id);
+            // Prefer whichever melody was open the last time this project
+            // was worked on (persisted in the `.raku` file) over just
+            // always landing on the first one — e.g. right after loading
+            // the project fresh, when nothing's active yet this session.
+            let last_valid =
+                project.last_melody_id.filter(|id| project.melodies.iter().any(|m| m.id == *id));
+            self.active_melody_id = last_valid.or_else(|| project.melodies.first().map(|m| m.id));
+            project.last_melody_id = self.active_melody_id;
             self.active_section_id = None;
             self.selection.clear();
         }
@@ -138,7 +145,15 @@ impl BethovenState {
             .active_melody(project)
             .is_some_and(|m| self.active_section_id.is_some_and(|id| m.section(id).is_some()));
         if !section_valid {
-            self.active_section_id = self.active_melody(project).and_then(|m| m.sections.first()).map(|s| s.id);
+            let last_valid = self
+                .active_melody(project)
+                .and_then(|m| m.last_section_id)
+                .filter(|id| self.active_melody(project).is_some_and(|m| m.section(*id).is_some()));
+            self.active_section_id =
+                last_valid.or_else(|| self.active_melody(project).and_then(|m| m.sections.first()).map(|s| s.id));
+            if let Some(melody) = self.active_melody_mut(project) {
+                melody.last_section_id = self.active_section_id;
+            }
             self.selection.clear();
         }
     }

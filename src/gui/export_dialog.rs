@@ -23,6 +23,16 @@ pub struct ExportDialogState {
     /// already exists — the confirm popup reads this, and only starts the
     /// export once the user confirms.
     confirm_overwrite: Option<String>,
+    /// One-shot: set alongside `open = true` so the very next frame gives
+    /// the "Export" button keyboard focus (egui treats Space/Enter on a
+    /// focused clickable widget as a click), letting Ctrl+E, Enter export
+    /// immediately. Consumed (via `std::mem::take`) the first time it's
+    /// read, so tabbing focus elsewhere afterward sticks instead of being
+    /// stolen back every frame.
+    focus_export_button: bool,
+    /// Same idea as `focus_export_button`, for the overwrite-confirm
+    /// popup's "Overwrite" button.
+    focus_overwrite_button: bool,
     /// Set by the background export thread when it finishes (`Ok` names the
     /// files written, `Err` a message) — polled and turned into a toast
     /// (then cleared) every frame regardless of whether the dialog itself
@@ -46,6 +56,8 @@ impl Default for ExportDialogState {
             comments: metadata.comments,
             software: metadata.software,
             confirm_overwrite: None,
+            focus_export_button: false,
+            focus_overwrite_button: false,
             result: Arc::new(Mutex::new(None)),
         }
     }
@@ -60,6 +72,7 @@ pub fn open(app: &mut RakunatorApp) {
     let metadata = app.project.lock().unwrap().metadata.clone();
     app.export_dialog.open_for_project(project_name.as_deref(), &metadata);
     app.export_dialog.open = true;
+    app.export_dialog.focus_export_button = true;
 }
 
 impl ExportDialogState {
@@ -148,7 +161,11 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
             });
             ui.add_space(6.0);
 
-            if ui.button("Export").clicked() {
+            let export_resp = ui.button("Export");
+            if std::mem::take(&mut app.export_dialog.focus_export_button) {
+                export_resp.request_focus();
+            }
+            if export_resp.clicked() {
                 do_export = true;
             }
 
@@ -168,6 +185,7 @@ pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
         let (wav_path, mp3_path) = export::export_paths(&file_name);
         if wav_path.exists() || mp3_path.exists() {
             app.export_dialog.confirm_overwrite = Some(file_name);
+            app.export_dialog.focus_overwrite_button = true;
         } else {
             save_and_start_export(ctx, app, file_name);
         }
@@ -235,7 +253,11 @@ fn draw_overwrite_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
             ui.label(format!("{} and/or {}", wav_path.display(), mp3_path.display()));
             ui.label("already exist. Overwrite them?");
             ui.horizontal(|ui| {
-                if ui.button("Overwrite").clicked() {
+                let overwrite_resp = ui.button("Overwrite");
+                if std::mem::take(&mut app.export_dialog.focus_overwrite_button) {
+                    overwrite_resp.request_focus();
+                }
+                if overwrite_resp.clicked() {
                     overwrite = true;
                 }
                 if ui.button("Cancel").clicked() {

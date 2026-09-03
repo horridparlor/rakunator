@@ -19,6 +19,9 @@ struct SavedProject {
     /// Absent from `.raku` files saved before Bethoven existed.
     #[serde(default)]
     melodies: Vec<Melody>,
+    /// Absent from `.raku` files saved before this existed.
+    #[serde(default)]
+    last_melody_id: Option<u32>,
 }
 
 /// On-disk shape of `ProjectMetadata` — see `to_saved`/`from_saved` for the
@@ -131,6 +134,7 @@ fn to_saved(project: &Project) -> SavedProject {
             })
             .collect(),
         melodies: project.melodies.clone(),
+        last_melody_id: project.last_melody_id,
     }
 }
 
@@ -168,6 +172,7 @@ fn from_saved(saved: SavedProject) -> Project {
         }
     }
     project.melodies = saved.melodies;
+    project.last_melody_id = saved.last_melody_id;
     // Rebuilding a loaded project shouldn't itself be undoable back to
     // an empty one.
     project.clear_undo_history();
