@@ -311,8 +311,8 @@ fn help_sections() -> &'static [HelpSection] {
                 ("Ctrl+Shift+S", "Save As — opens a native file picker, then saves to whatever location you choose"),
                 ("Export Project... (toolbar) / Ctrl+E", "Render the full mixdown to .wav/.mp3 under a name you choose"),
                 (
-                    "Ctrl+L (on an empty project)",
-                    "Loads the most recently opened/saved project — the same target as the top of \"Recent projects\" in Project File... — since Mute (Ctrl+L's other job) has nothing to do yet",
+                    "Ctrl+O",
+                    "Loads the most recently opened/saved project — the same target as the top of \"Recent projects\" in Project File... — always, asking to confirm first if the current project has anything in it to lose (Ctrl+L's version of this only fires when the project is already empty)",
                 ),
                 (
                     "Ctrl+W",
@@ -324,39 +324,60 @@ fn help_sections() -> &'static [HelpSection] {
             title: "Bethoven",
             rows: &[
                 (
-                    "Bethoven... (toolbar)",
+                    "Bethoven... (toolbar) / Ctrl+B",
                     "Open the piano-roll composer — its own scale-constrained note editor, decoupled from the main timeline",
                 ),
-                ("Click an empty scale row", "Add a note there, using the current default length/instrument"),
+                (
+                    "Click an empty scale row",
+                    "Add a note there — but if any notes are currently selected, that first click only clears the selection instead (click again to place a note)",
+                ),
                 ("Click a note", "Select it (replacing the current selection)"),
                 ("Shift+Click a note", "Toggle it into/out of the current selection"),
+                ("Right-click a note", "Delete it (or the whole selection, if it's part of one)"),
                 ("Shift+Drag on empty space", "Marquee-select every note the rectangle touches"),
-                ("Drag a note's body", "Move the whole selection together"),
-                ("Drag a note's left/right edge", "Resize that note from that edge"),
-                ("Ctrl+C / Ctrl+V", "Copy / paste the selected notes"),
-                ("Ctrl+D", "Delete the selected notes (Bethoven-only rebind of the main app's Ctrl+D)"),
-                ("Alt+D", "Copy the selected note's length and instrument as the new defaults for notes you add next"),
+                (
+                    "Drag a note's body / left / right edge",
+                    "Move the selection, or resize that note from that edge (cursor changes to show which) — snaps to other notes' edges, drawing a yellow alignment line, the same as the main timeline",
+                ),
+                ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut / copy / paste the selected notes"),
+                ("Ctrl+D, Delete, Backspace, or right-click", "Delete the selected notes"),
+                ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo note edits in the piano roll"),
+                (
+                    "New notes' default length/instrument",
+                    "Always match whichever single note you last selected or touched — no shortcut needed",
+                ),
                 ("Alt+R", "Reset the selected notes' volume and pan to their defaults"),
                 (
                     "Scroll a selected note",
-                    "Louder/quieter (0-100%) — the note also gets brighter/fainter, never fully transparent",
+                    "Louder/quieter (0-100%) — the note also gets brighter/fainter, never fully transparent; a small marker shows its left/right pan",
                 ),
                 ("Shift+Scroll a selected note", "Pan left (scroll up) / right (scroll down)"),
+                ("Ctrl+Scroll on the piano roll", "Zoom in/out, keeping the tick under the pointer fixed"),
+                (
+                    "Click the ruler",
+                    "Seek the preview playhead there — snaps to a nearby note edge (yellow flash), same as the main timeline's ruler",
+                ),
+                (
+                    "Left/Right (piano roll)",
+                    "Nudge the preview playhead, stopping at the nearest note edge instead of stepping past it",
+                ),
+                ("Shift+Left / Shift+Right", "Jump the preview playhead to the very start / end of the active section"),
                 ("Space, or the Play/Pause button", "Preview the active section — pausing returns to where Play started"),
                 ("BPM slider", "Sets the current melody's tempo"),
                 (
-                    "+ Section / scale & root pickers",
-                    "Add a section and pick its scale/root — the piano roll then only shows that scale's rows",
+                    "+ Section / Rename Section / Delete Section / scale & root pickers",
+                    "Add, rename, or remove a section, and pick its scale/root — the piano roll then only shows that scale's rows",
                 ),
                 ("Melody combo / New / Rename / Delete", "Save, switch between, or remove melodies saved with this project"),
                 (
                     "Export to Project Track",
-                    "Render the whole melody (all sections, in order) onto a new, fully-editable track in the main project",
+                    "Render the current section onto a new, fully-editable track in the main project",
                 ),
                 (
                     "Set instrument (toolbar)",
-                    "Assign Piano/Strings/Bass/Guitar/Synth/Lead/Sub/808/Drum/Snare/Hi-Hat/Cowbell to the selected notes",
+                    "Assign Piano/Strings/Violin/Bass/Guitar/Synth/Lead/Sub/808/Drum/Snare/Hi-Hat/Cowbell to the selected notes",
                 ),
+                ("Fullscreen / Restore (toolbar)", "Toggle the Bethoven window between filling the screen and floating/resizable"),
             ],
         },
     ]

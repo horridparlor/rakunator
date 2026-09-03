@@ -26,6 +26,11 @@ pub struct ProjectFileDialogState {
     /// already exists — the confirm popup (`draw_overwrite_confirm`) reads
     /// this, and actually saves only once the user confirms.
     confirm_overwrite_path: Option<PathBuf>,
+    /// Set instead of loading immediately when Ctrl+O targets a
+    /// non-empty project — the confirm popup (`draw_confirm_load_last`)
+    /// reads this, and actually loads only once the user confirms
+    /// discarding the current project.
+    confirm_load_last: bool,
     /// Most-recently-used first; capped at `MAX_RECENT_PROJECTS` and
     /// persisted to `recent_projects.json` (see `settings_persistence`)
     /// so it survives across restarts.
@@ -46,6 +51,7 @@ impl Default for ProjectFileDialogState {
             path_text: default_path.display().to_string(),
             status: None,
             confirm_overwrite_path: None,
+            confirm_load_last: false,
             recent_projects: settings_persistence::load_recent_projects(),
             op_result: Arc::new(Mutex::new(None)),
         }
@@ -81,6 +87,9 @@ fn forget_recent(app: &mut RakunatorApp, path: &std::path::Path) {
 /// immediately, rather than lingering on an in-dialog status line.
 pub fn draw(ctx: &egui::Context, app: &mut RakunatorApp) {
     poll_result(app);
+    // Runs even while the dialog itself is closed — Ctrl+O (see
+    // `load_last_with_confirm`) can set this from anywhere.
+    draw_confirm_load_last(ctx, app);
 
     if !app.project_file_dialog.open {
         return;
@@ -299,6 +308,52 @@ pub fn load_last(ctx: &egui::Context, app: &mut RakunatorApp) {
     };
     app.project_file_dialog.path_text = path.display().to_string();
     start_load(ctx, app, &path);
+}
+
+/// Ctrl+O: loads the most recently opened/saved project unconditionally —
+/// immediately if the current project is still empty (nothing to lose),
+/// otherwise via `draw_confirm_load_last` first, since it would discard
+/// whatever's currently open.
+pub fn load_last_with_confirm(ctx: &egui::Context, app: &mut RakunatorApp) {
+    let is_empty = app.project.lock().unwrap().is_empty();
+    if is_empty {
+        load_last(ctx, app);
+    } else {
+        app.project_file_dialog.confirm_load_last = true;
+    }
+}
+
+/// A small modal, shown by `load_last_with_confirm` whenever the current
+/// project has clips in it — loading over it would otherwise silently
+/// discard unsaved work.
+fn draw_confirm_load_last(ctx: &egui::Context, app: &mut RakunatorApp) {
+    if !app.project_file_dialog.confirm_load_last {
+        return;
+    }
+    let mut confirmed = false;
+    let mut cancel = false;
+    egui::Window::new("Load last project?")
+        .collapsible(false)
+        .resizable(false)
+        .frame(super::window_frame(ctx, 1, 1, 1, 1))
+        .show(ctx, |ui| {
+            ui.label("This will discard the current project's unsaved changes.");
+            ui.horizontal(|ui| {
+                if ui.button("Load").clicked() {
+                    confirmed = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if confirmed {
+        app.project_file_dialog.confirm_load_last = false;
+        load_last(ctx, app);
+    } else if cancel {
+        app.project_file_dialog.confirm_load_last = false;
+    }
 }
 
 /// Starts loading `path` as the project on a background thread — a

@@ -515,6 +515,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             }
             if text_button(ui, "Bethoven...").clicked() {
                 app.bethoven.open = true;
+                app.bethoven.has_focus = true;
             }
             if text_button(ui, "Project File...").clicked() {
                 app.project_file_dialog.open = true;

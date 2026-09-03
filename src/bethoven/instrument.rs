@@ -1,4 +1,4 @@
-//! Procedural synthesis for Bethoven's 12 instruments. There are no sample
+//! Procedural synthesis for Bethoven's 13 instruments. There are no sample
 //! assets anywhere in this project, so every instrument is built from
 //! oscillators (in the same spirit as `crate::waveform::Waveform`), a
 //! shared ADSR envelope, and — for the percussion voices — simple one-pole
@@ -32,12 +32,18 @@ pub enum Instrument {
     /// A pure, smooth two-octaves-down sine — the deepest, simplest voice,
     /// for sustained sub pads rather than 808's percussive punch.
     Sub,
+    /// A bowed-string voice built to approximate a real violin as closely as
+    /// procedural synthesis (no samples) allows: rich sawtooth-based
+    /// harmonics, a slow bow-driven attack, vibrato that eases in as the
+    /// note settles, a touch of tremolo, and constant faint bow noise.
+    Violin,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 12] = [
+    pub const ALL: [Instrument; 13] = [
         Instrument::Piano,
         Instrument::Strings,
+        Instrument::Violin,
         Instrument::Bass,
         Instrument::Guitar,
         Instrument::Synth,
@@ -64,6 +70,7 @@ impl Instrument {
             Instrument::Cowbell => "Cowbell",
             Instrument::Bass808 => "808",
             Instrument::Sub => "Sub",
+            Instrument::Violin => "Violin",
         }
     }
 
@@ -212,6 +219,7 @@ pub fn render_note(instrument: Instrument, midi_note: u8, duration: Duration, ga
     let mut out = match instrument {
         Instrument::Piano => render_piano(freq, n, sr),
         Instrument::Strings => render_strings(freq, n, sr),
+        Instrument::Violin => render_violin(freq, n, sr),
         Instrument::Bass => render_bass(freq, n, sr),
         Instrument::Guitar => render_guitar(freq, n, sr),
         Instrument::Synth => render_synth(freq, n, sr),
@@ -259,6 +267,51 @@ fn render_strings(freq: f32, n: usize, sr: f32) -> Vec<f32> {
             p1 = (p1 + freq * 0.995 / sr) % 1.0;
             p2 = (p2 + freq * 1.005 / sr) % 1.0;
             let s = (sawtooth(p1) + sawtooth(p2)) * 0.5;
+            s * env.gain_at(t, dur_s)
+        })
+        .collect()
+}
+
+/// A bowed violin, approximated within the limits of pure synthesis (no
+/// samples, no physical bow-string model): a detuned sawtooth pair gives
+/// the rich, roughly-Helmholtz harmonic spectrum a bowed string actually
+/// produces; a slow attack matches how a bow takes a moment to set the
+/// string singing; vibrato eases in over the first ~150ms the way a
+/// player's hand naturally does once a note settles, rather than being on
+/// from the start; a slight tremolo and constant faint bow-noise floor add
+/// the small imperfections that make a bowed tone sound alive instead of a
+/// static, "dead" waveform; and the spectrum is shaped (low end trimmed,
+/// top end tamed) to sit in a violin's own register instead of a raw
+/// sawtooth's harsh full-range buzz.
+fn render_violin(freq: f32, n: usize, sr: f32) -> Vec<f32> {
+    let env = Envelope { attack: 0.09, decay: 0.06, sustain: 0.82, release: 0.22 };
+    let mut p1 = 0.0f32;
+    let mut p2 = 0.0f32;
+    let mut vib_phase = 0.0f32;
+    let mut trem_phase = 0.0f32;
+    let dur_s = n as f32 / sr;
+    let noise = white_noise(n, 0x0B10_1157 ^ (freq as u32));
+    let raw: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / sr;
+            let vib_amount = (t / 0.15).min(1.0) * 0.006;
+            vib_phase = (vib_phase + 5.4 / sr) % 1.0;
+            let vibrato = 1.0 + sine(vib_phase) * vib_amount;
+            trem_phase = (trem_phase + 4.0 / sr) % 1.0;
+            let tremolo = 1.0 + sine(trem_phase) * 0.04;
+            let f = freq * vibrato;
+            p1 = (p1 + f / sr) % 1.0;
+            p2 = (p2 + f * 1.004 / sr) % 1.0;
+            let tone = (sawtooth(p1) + sawtooth(p2)) * 0.5;
+            tone * tremolo + noise[i] * 0.03
+        })
+        .collect();
+    let shaped = one_pole_lowpass(&one_pole_highpass(&raw, sr, 180.0), sr, 6500.0);
+    shaped
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / sr;
             s * env.gain_at(t, dur_s)
         })
         .collect()
@@ -498,10 +551,11 @@ mod tests {
         assert!(Instrument::Lead.is_pitched());
         assert!(Instrument::Sub.is_pitched());
         assert!(Instrument::Bass808.is_pitched());
+        assert!(Instrument::Violin.is_pitched());
     }
 
     #[test]
-    fn instrument_count_is_12() {
-        assert_eq!(Instrument::ALL.len(), 12);
+    fn instrument_count_is_13() {
+        assert_eq!(Instrument::ALL.len(), 13);
     }
 }

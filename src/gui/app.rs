@@ -259,7 +259,14 @@ impl eframe::App for RakunatorApp {
         let recording = self.recording.is_some();
 
         if !recording {
-            if self.bethoven.open {
+            handle_global_shortcuts(ui, self);
+            // Only route to Bethoven's own shortcuts while it's both open
+            // *and* the thing last clicked — otherwise, with it open but
+            // the main timeline actually being interacted with, its Ctrl+X
+            // etc. would swallow the main app's own (e.g. cutting a
+            // main-timeline clip would silently do nothing, since Bethoven
+            // would try to cut its own, likely empty, note selection).
+            if self.bethoven.open && self.bethoven.has_focus {
                 bethoven::handle_shortcuts(ui, self);
             } else {
                 handle_shortcuts(ui, self);
@@ -500,11 +507,19 @@ fn handle_record_shortcut(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
     }
+    // Checked against each key-press event's own attached `modifiers`
+    // rather than the frame's aggregate `i.modifiers` — the two can
+    // disagree for a single frame (e.g. releasing Alt right as R is
+    // pressed), which previously let a modified press like Alt+R
+    // (Bethoven's "reset gain/pan") slip through here as a plain "R" and
+    // start recording.
     let (r, space) = ui.ctx().input(|i| {
-        (
-            !i.modifiers.any() && i.key_pressed(egui::Key::R),
-            !i.modifiers.any() && i.key_pressed(egui::Key::Space),
-        )
+        let plain_key = |key: egui::Key| {
+            i.events.iter().any(
+                |e| matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && modifiers.is_none()),
+            )
+        };
+        (plain_key(egui::Key::R), plain_key(egui::Key::Space))
     });
     if app.recording.is_some() {
         if r || space {
@@ -544,18 +559,111 @@ fn nudge_samples(app: &RakunatorApp) -> i64 {
     ((NUDGE_PIXELS / app.timeline.px_per_sample).round() as i64).max(1)
 }
 
+/// Shortcuts that make sense regardless of whether Bethoven currently has
+/// focus (see `RakunatorApp::ui`) — window/app chrome and project
+/// file/save management, none of which are about editing the main
+/// timeline's own clips/tracks: F11 toggles fullscreen; Ctrl+M toggles
+/// maximized/restored; Ctrl+Escape quits; Ctrl+W closes every open dialog
+/// (Create Wave, Bethoven, Project File, Export Project, Edit Effect Steps,
+/// an effect's quick-edit modal, Help); Ctrl+N adds a new track; Ctrl+S /
+/// Ctrl+Shift+S save/Save As; Ctrl+P opens the "Project File..." dialog;
+/// Ctrl+E opens "Export Project..."; Ctrl+O reloads the most recently
+/// opened/saved project (confirming first if the current one has anything
+/// in it to lose); Ctrl+B opens Bethoven. Runs unconditionally, like
+/// `handle_record_shortcut`, rather than being gated by which of
+/// `handle_shortcuts`/`bethoven::handle_shortcuts` is currently active.
+fn handle_global_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+
+    let toggle_fullscreen = ui.ctx().input(|i| i.key_pressed(egui::Key::F11));
+    if toggle_fullscreen {
+        let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+    }
+
+    let toggle_maximized = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::M));
+    if toggle_maximized {
+        let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+    }
+
+    let quit = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::Escape));
+    if quit {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    let close_dialogs = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::W));
+    if close_dialogs {
+        app.wave_dialog.open = false;
+        app.bethoven.open = false;
+        app.project_file_dialog.open = false;
+        app.export_dialog.open = false;
+        app.effects.close_settings();
+        app.effects.close_active_effect_dialog();
+        app.help_open = false;
+    }
+
+    let add_track = ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::N));
+    if add_track {
+        app.project.lock().unwrap().add_track();
+    }
+
+    let (save, save_as) = ui.ctx().input(|i| {
+        (
+            i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S),
+            i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S),
+        )
+    });
+    if save {
+        project_file_dialog::save_current(ui.ctx(), app);
+    } else if save_as {
+        project_file_dialog::save_as(ui.ctx(), app);
+    }
+
+    let (open_project_file, open_export, open_last_project, open_bethoven) = ui.ctx().input(|i| {
+        (
+            i.modifiers.command && i.key_pressed(egui::Key::P),
+            i.modifiers.command && i.key_pressed(egui::Key::E),
+            i.modifiers.command && i.key_pressed(egui::Key::O),
+            i.modifiers.command && i.key_pressed(egui::Key::B),
+        )
+    });
+    if open_project_file {
+        app.project_file_dialog.open = true;
+    }
+    if open_export {
+        export_dialog::open(app);
+    }
+    if open_last_project {
+        project_file_dialog::load_last_with_confirm(ui.ctx(), app);
+    }
+    if open_bethoven {
+        app.bethoven.open = true;
+        app.bethoven.has_focus = true;
+    }
+}
+
 /// Ctrl/Cmd+X/C/V/D cut/copy/paste/duplicate the selected clip(s) — or, if
 /// one or more tracks are selected instead, Ctrl+D duplicates each of them
 /// directly below itself (see `Project::duplicate_track`); Ctrl+F /
-/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them; Ctrl+N
-/// adds a new track; Ctrl+P opens the "Project File..." dialog; Ctrl+E
-/// opens the "Export Project..." dialog; Ctrl+M toggles the window between
-/// maximized and restored; Ctrl+Escape quits the application; Left/Right
-/// nudges the selected clip(s) in time; plain Space toggles play/pause
-/// (resuming from wherever it was paused); plain S splits the selected
-/// clip(s) at the playhead. All keyboard handling is skipped while a text
-/// field (e.g. a track name) has focus, so typing a space or an "s" doesn't
-/// hijack the transport.
+/// Ctrl+Shift+F fade the effect targets in/out; Ctrl+L mutes them, unless
+/// the project is still empty, in which case it reloads the most recently
+/// opened/saved project instead (see `mute_range` below); Ctrl+Z /
+/// Ctrl+Shift+Z undo/redo; Left/Right nudges the selected clip(s) in time;
+/// plain Space toggles play/pause (resuming from wherever it was paused);
+/// plain S splits the selected clip(s) at the playhead. Only active while
+/// Bethoven isn't the thing currently focused (see `RakunatorApp::ui` and
+/// `handle_global_shortcuts` for shortcuts that work either way). All
+/// keyboard handling is skipped while a text field (e.g. a track name) has
+/// focus, so typing a space or an "s" doesn't hijack the transport.
 fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
@@ -610,79 +718,11 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         )
     });
 
-    let toggle_fullscreen = ui.ctx().input(|i| i.key_pressed(egui::Key::F11));
-    if toggle_fullscreen {
-        let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
-    }
-
-    let toggle_maximized = ui
-        .ctx()
-        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::M));
-    if toggle_maximized {
-        let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
-    }
-
-    let quit = ui
-        .ctx()
-        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::Escape));
-    if quit {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-
-    // Closes every currently-open dialog (Create Wave, Project File,
-    // Export Project, Edit Effect Steps, an effect's quick-edit modal,
-    // Help) — whichever happen to be open, since more than one can be up
-    // at once.
-    let close_dialogs = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::W));
-    if close_dialogs {
-        app.wave_dialog.open = false;
-        app.bethoven.open = false;
-        app.project_file_dialog.open = false;
-        app.export_dialog.open = false;
-        app.effects.close_settings();
-        app.effects.close_active_effect_dialog();
-        app.help_open = false;
-    }
-
     if undo {
         app.project.lock().unwrap().undo();
     }
     if redo {
         app.project.lock().unwrap().redo();
-    }
-
-    let add_track = ui
-        .ctx()
-        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::N));
-    if add_track {
-        app.project.lock().unwrap().add_track();
-    }
-
-    let (save, save_as) = ui.ctx().input(|i| {
-        (
-            i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S),
-            i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S),
-        )
-    });
-    if save {
-        project_file_dialog::save_current(ui.ctx(), app);
-    } else if save_as {
-        project_file_dialog::save_as(ui.ctx(), app);
-    }
-
-    let (open_project_file, open_export) = ui.ctx().input(|i| {
-        (
-            i.modifiers.command && i.key_pressed(egui::Key::P),
-            i.modifiers.command && i.key_pressed(egui::Key::E),
-        )
-    });
-    if open_project_file {
-        app.project_file_dialog.open = true;
-    }
-    if open_export {
-        export_dialog::open(app);
     }
 
     if repeat_effect {
@@ -724,9 +764,11 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if mute_range {
         // Ctrl+L is Mute — but on a brand-new, still-empty project there's
         // nothing to mute anyway, so it instead reloads the most recently
-        // opened/saved project (same target as the "Recent projects" list
+        // opened/saved project (same target as the top of "Recent projects"
         // in "Project File..."), a quicker way back into whatever you were
-        // just working on than reopening that dialog by hand.
+        // just working on than reopening that dialog by hand. Unlike Ctrl+O
+        // (which always reloads it, confirming first if there's anything to
+        // lose), this path only ever fires when there's nothing to lose.
         let is_empty = app.project.lock().unwrap().is_empty();
         if is_empty {
             project_file_dialog::load_last(ui.ctx(), app);
