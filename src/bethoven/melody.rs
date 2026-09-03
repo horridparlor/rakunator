@@ -113,6 +113,31 @@ impl Section {
         }
     }
 
+    /// Like `move_notes`, but the vertical move is expressed as a number of
+    /// *visible rows* (as shown in the piano roll, i.e. `visible_rows`,
+    /// already filtered to the section's scale, highest pitch first) rather
+    /// than raw semitones — since adjacent scale rows aren't always a
+    /// semitone apart, moving by a flat semitone delta can land a note on a
+    /// pitch that isn't a member of `visible_rows` at all, making it
+    /// silently disappear from the roll (while still sounding, since
+    /// playback doesn't filter by scale). `delta_rows` follows the same
+    /// sign convention as `move_notes`'s `delta_pitch`: positive moves to a
+    /// higher pitch (i.e. toward the *start* of `visible_rows`). A note
+    /// whose current pitch isn't in `visible_rows` (e.g. left over from
+    /// before the section's scale was changed) is moved in time only — its
+    /// pitch is left alone rather than guessed at.
+    pub fn move_notes_by_row(&mut self, ids: &[u32], delta_ticks: i64, delta_rows: i32, visible_rows: &[u8]) {
+        for note in self.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+            note.start_tick = (note.start_tick as i64 + delta_ticks).max(0) as u32;
+            if delta_rows != 0
+                && let Some(idx) = visible_rows.iter().position(|&p| p == note.pitch)
+            {
+                let new_idx = (idx as i32 - delta_rows).clamp(0, visible_rows.len() as i32 - 1) as usize;
+                note.pitch = visible_rows[new_idx];
+            }
+        }
+    }
+
     /// Resizes one note by moving its start and/or end independently
     /// (dragging the left edge changes `start_tick` while keeping the same
     /// end; dragging the right edge only changes the length) — callers pass
@@ -276,6 +301,38 @@ mod tests {
 
         section.delete_notes(&[id]);
         assert!(section.notes.is_empty());
+    }
+
+    #[test]
+    fn move_notes_by_row_stays_on_a_visible_scale_row() {
+        // C Major rows near middle C: ... A3(57) B3(59) C4(60) D4(62) E4(64) ...
+        let visible_rows: Vec<u8> = vec![64, 62, 60, 59, 57]; // high-to-low, as drawn
+        let mut section = Section::new(0, "S".into(), 0, 0, bars_to_ticks(4));
+        let id = section.add_note(60, 0, PPQ, Instrument::Piano); // C4, row index 2
+
+        // Moving up (positive = higher pitch) one row should land exactly
+        // on D4 (62), not C4+1=61 (which isn't in the scale and would
+        // otherwise vanish from the roll).
+        section.move_notes_by_row(&[id], 0, 1, &visible_rows);
+        assert_eq!(section.note(id).unwrap().pitch, 62);
+
+        // Moving down two rows from there lands on B3 (59).
+        section.move_notes_by_row(&[id], 0, -2, &visible_rows);
+        assert_eq!(section.note(id).unwrap().pitch, 59);
+
+        // Clamped at the edges of the visible range instead of leaving it.
+        section.move_notes_by_row(&[id], 0, -100, &visible_rows);
+        assert_eq!(section.note(id).unwrap().pitch, 57);
+    }
+
+    #[test]
+    fn move_notes_by_row_leaves_off_scale_pitch_untouched() {
+        let visible_rows: Vec<u8> = vec![64, 62, 60, 59, 57];
+        let mut section = Section::new(0, "S".into(), 0, 0, bars_to_ticks(4));
+        let id = section.add_note(61, 0, PPQ, Instrument::Piano); // not in visible_rows
+        section.move_notes_by_row(&[id], PPQ as i64, -1, &visible_rows);
+        assert_eq!(section.note(id).unwrap().pitch, 61);
+        assert_eq!(section.note(id).unwrap().start_tick, PPQ);
     }
 
     #[test]

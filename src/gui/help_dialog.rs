@@ -353,7 +353,10 @@ fn help_sections() -> &'static [HelpSection] {
                     "Export to Project Track",
                     "Render the whole melody (all sections, in order) onto a new, fully-editable track in the main project",
                 ),
-                ("Set instrument (toolbar)", "Assign Piano/Strings/Bass/Guitar/Synth/Drum/Snare/Hi-Hat to the selected notes"),
+                (
+                    "Set instrument (toolbar)",
+                    "Assign Piano/Strings/Bass/Guitar/Synth/Lead/Sub/808/Drum/Snare/Hi-Hat/Cowbell to the selected notes",
+                ),
             ],
         },
     ]

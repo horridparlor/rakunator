@@ -1,4 +1,4 @@
-//! Procedural synthesis for Bethoven's 8 instruments. There are no sample
+//! Procedural synthesis for Bethoven's 12 instruments. There are no sample
 //! assets anywhere in this project, so every instrument is built from
 //! oscillators (in the same spirit as `crate::waveform::Waveform`), a
 //! shared ADSR envelope, and — for the percussion voices — simple one-pole
@@ -20,18 +20,34 @@ pub enum Instrument {
     Drum,
     Snare,
     HiHat,
+    /// A bright, fast plucky lead, pitched an octave above the row it's
+    /// placed on — good for quick high runs.
+    Lead,
+    /// A classic unpitched analog-cowbell hit (two clanging square-wave
+    /// tones), ignoring the note's row like the other percussion voices.
+    Cowbell,
+    /// A modern tuned 808-style sub kick: a punchy pitch-drop "thump" that
+    /// settles on the row's note, for trap/hip-hop style basslines.
+    Bass808,
+    /// A pure, smooth two-octaves-down sine — the deepest, simplest voice,
+    /// for sustained sub pads rather than 808's percussive punch.
+    Sub,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 8] = [
+    pub const ALL: [Instrument; 12] = [
         Instrument::Piano,
         Instrument::Strings,
         Instrument::Bass,
         Instrument::Guitar,
         Instrument::Synth,
+        Instrument::Lead,
+        Instrument::Sub,
+        Instrument::Bass808,
         Instrument::Drum,
         Instrument::Snare,
         Instrument::HiHat,
+        Instrument::Cowbell,
     ];
 
     pub fn name(self) -> &'static str {
@@ -44,14 +60,19 @@ impl Instrument {
             Instrument::Drum => "Drum",
             Instrument::Snare => "Snare",
             Instrument::HiHat => "Hi-Hat",
+            Instrument::Lead => "Lead",
+            Instrument::Cowbell => "Cowbell",
+            Instrument::Bass808 => "808",
+            Instrument::Sub => "Sub",
         }
     }
 
     /// Whether this instrument is pitched by the piano roll row it's placed
-    /// on. The three percussion voices are conventional one-shot hits
-    /// (like a real drum machine) and ignore the note's pitch.
+    /// on. Drum/Snare/HiHat/Cowbell are conventional unpitched one-shot
+    /// hits (like a real drum machine); 808 is pitched despite being
+    /// percussive, matching how it's actually used (a tuned sub kick).
     pub fn is_pitched(self) -> bool {
-        !matches!(self, Instrument::Drum | Instrument::Snare | Instrument::HiHat)
+        !matches!(self, Instrument::Drum | Instrument::Snare | Instrument::HiHat | Instrument::Cowbell)
     }
 }
 
@@ -194,9 +215,13 @@ pub fn render_note(instrument: Instrument, midi_note: u8, duration: Duration, ga
         Instrument::Bass => render_bass(freq, n, sr),
         Instrument::Guitar => render_guitar(freq, n, sr),
         Instrument::Synth => render_synth(freq, n, sr),
+        Instrument::Lead => render_lead(freq, n, sr),
+        Instrument::Sub => render_sub(freq, n, sr),
+        Instrument::Bass808 => render_808(freq, n, sr),
         Instrument::Drum => render_drum(n, sr),
         Instrument::Snare => render_snare(n, sr, midi_note),
         Instrument::HiHat => render_hihat(n, sr, midi_note),
+        Instrument::Cowbell => render_cowbell(n, sr),
     };
     for s in out.iter_mut() {
         *s = (*s * gain).clamp(-1.0, 1.0);
@@ -272,17 +297,111 @@ fn render_guitar(freq: f32, n: usize, sr: f32) -> Vec<f32> {
         .collect()
 }
 
+/// A warm "supersaw" pad: three detuned sawtooths (a touch of chorus-like
+/// shimmer instead of one bare oscillator) run through the lowpass twice
+/// (a steeper, smoother rolloff than a single stage) to tame the raw
+/// sawtooth's harsh upper harmonics/aliasing — much gentler than the old
+/// naive square+saw blend.
 fn render_synth(freq: f32, n: usize, sr: f32) -> Vec<f32> {
-    let env = Envelope { attack: 0.02, decay: 0.1, sustain: 0.75, release: 0.2 };
-    let mut p = 0.0f32;
-    let dur_s = n as f32 / sr;
+    let env = Envelope { attack: 0.03, decay: 0.15, sustain: 0.7, release: 0.25 };
+    let detunes = [-0.006, 0.0, 0.006];
+    let mut phases = [0.0f32; 3];
     let raw: Vec<f32> = (0..n)
         .map(|_| {
-            p = (p + freq / sr) % 1.0;
-            square(p) * 0.5 + sawtooth(p) * 0.5
+            let mut s = 0.0;
+            for (p, d) in phases.iter_mut().zip(detunes.iter()) {
+                *p = (*p + freq * (1.0 + d) / sr) % 1.0;
+                s += sawtooth(*p);
+            }
+            s / 3.0
         })
         .collect();
-    let filtered = one_pole_lowpass(&raw, sr, 3000.0);
+    let filtered = one_pole_lowpass(&one_pole_lowpass(&raw, sr, 2200.0), sr, 2200.0);
+    let dur_s = n as f32 / sr;
+    filtered
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / sr;
+            s * env.gain_at(t, dur_s)
+        })
+        .collect()
+}
+
+/// A bright, fast pluck an octave above the row it's on, with a slight
+/// detune between its square/saw layers for a bit of shimmer — meant for
+/// quick high runs rather than sustained chords.
+fn render_lead(freq: f32, n: usize, sr: f32) -> Vec<f32> {
+    let env = Envelope { attack: 0.002, decay: 0.12, sustain: 0.35, release: 0.08 };
+    let f = freq * 2.0;
+    let mut p1 = 0.0f32;
+    let mut p2 = 0.0f32;
+    let dur_s = n as f32 / sr;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / sr;
+            p1 = (p1 + f / sr) % 1.0;
+            p2 = (p2 + f * 1.01 / sr) % 1.0;
+            let s = square(p1) * 0.5 + sawtooth(p2) * 0.5;
+            s * env.gain_at(t, dur_s)
+        })
+        .collect()
+}
+
+/// A pure, smooth sine two octaves below the row it's on — the deepest,
+/// simplest voice: a sustained sub pad rather than a percussive hit.
+fn render_sub(freq: f32, n: usize, sr: f32) -> Vec<f32> {
+    let env = Envelope { attack: 0.05, decay: 0.1, sustain: 0.9, release: 0.3 };
+    let f = freq / 4.0;
+    let mut phase = 0.0f32;
+    let dur_s = n as f32 / sr;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / sr;
+            phase = (phase + f / sr) % 1.0;
+            sine(phase) * env.gain_at(t, dur_s)
+        })
+        .collect()
+}
+
+/// A modern tuned "808" sub kick: like `render_drum`'s punchy pitch-drop
+/// thump, but settling on the row's own note (one octave down) instead of a
+/// fixed unpitched frequency, and with a longer decay-only tail — for
+/// trap/hip-hop style basslines you actually play a melody with.
+fn render_808(freq: f32, n: usize, sr: f32) -> Vec<f32> {
+    let env = Envelope { attack: 0.002, decay: 0.5, sustain: 0.0, release: 0.2 };
+    let target = freq / 2.0;
+    let pitch_env_s = 0.1;
+    let mut phase = 0.0f32;
+    let dur_s = n as f32 / sr;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / sr;
+            let drop = (t / pitch_env_s).min(1.0);
+            let f = target * 3.0 + (target - target * 3.0) * drop;
+            phase = (phase + f / sr) % 1.0;
+            sine(phase) * env.gain_at(t, dur_s)
+        })
+        .collect()
+}
+
+/// A classic analog cowbell: two non-harmonically-related square tones
+/// (~587Hz/~845Hz, the same ratio real cowbell emulations use for that
+/// metallic clang) with the low end trimmed by a highpass. Pitch is
+/// ignored, like the other percussion voices.
+fn render_cowbell(n: usize, sr: f32) -> Vec<f32> {
+    let env = Envelope { attack: 0.001, decay: 0.28, sustain: 0.0, release: 0.05 };
+    let mut p1 = 0.0f32;
+    let mut p2 = 0.0f32;
+    let raw: Vec<f32> = (0..n)
+        .map(|_| {
+            p1 = (p1 + 587.0 / sr) % 1.0;
+            p2 = (p2 + 845.0 / sr) % 1.0;
+            square(p1) * 0.5 + square(p2) * 0.5
+        })
+        .collect();
+    let filtered = one_pole_highpass(&raw, sr, 400.0);
+    let dur_s = n as f32 / sr;
     filtered
         .into_iter()
         .enumerate()
@@ -374,6 +493,15 @@ mod tests {
         assert!(!Instrument::Drum.is_pitched());
         assert!(!Instrument::Snare.is_pitched());
         assert!(!Instrument::HiHat.is_pitched());
+        assert!(!Instrument::Cowbell.is_pitched());
         assert!(Instrument::Piano.is_pitched());
+        assert!(Instrument::Lead.is_pitched());
+        assert!(Instrument::Sub.is_pitched());
+        assert!(Instrument::Bass808.is_pitched());
+    }
+
+    #[test]
+    fn instrument_count_is_12() {
+        assert_eq!(Instrument::ALL.len(), 12);
     }
 }

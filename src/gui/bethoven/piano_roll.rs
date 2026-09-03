@@ -35,6 +35,10 @@ pub(super) fn instrument_color(instrument: Instrument) -> Color32 {
         Instrument::Drum => Color32::from_rgb(230, 80, 80),
         Instrument::Snare => Color32::from_rgb(230, 130, 160),
         Instrument::HiHat => Color32::from_rgb(210, 210, 210),
+        Instrument::Lead => Color32::from_rgb(255, 210, 90),
+        Instrument::Cowbell => Color32::from_rgb(160, 130, 90),
+        Instrument::Bass808 => Color32::from_rgb(140, 90, 220),
+        Instrument::Sub => Color32::from_rgb(70, 110, 200),
     }
 }
 
@@ -170,18 +174,37 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             }
         }
 
+        let in_right_zone = |p: egui::Pos2| p.x >= note_rect.right() - RESIZE_ZONE_PX;
+        let in_left_zone = |p: egui::Pos2| p.x <= note_rect.left() + RESIZE_ZONE_PX;
+
+        // Cursor feedback for what a drag starting here would do — a
+        // resize cursor over either edge, a grab/grabbing hand over the
+        // body, so the resize zones (previously invisible) read as
+        // interactive before you commit to a drag.
+        if resp.dragged() {
+            let icon = match app.bethoven.drag {
+                Some(Drag::ResizeLeft { .. }) | Some(Drag::ResizeRight { .. }) => egui::CursorIcon::ResizeHorizontal,
+                _ => egui::CursorIcon::Grabbing,
+            };
+            ui.ctx().set_cursor_icon(icon);
+        } else if resp.hovered() {
+            let icon = if pointer_pos.is_some_and(|p| in_left_zone(p) || in_right_zone(p)) {
+                egui::CursorIcon::ResizeHorizontal
+            } else {
+                egui::CursorIcon::Grab
+            };
+            ui.ctx().set_cursor_icon(icon);
+        }
+
         if resp.drag_started() {
             if !app.bethoven.selection.contains(&note.id) {
                 app.bethoven.selection.clear();
                 app.bethoven.selection.insert(note.id);
             }
-            let in_right_zone =
-                resp.interact_pointer_pos().is_some_and(|p| p.x >= note_rect.right() - RESIZE_ZONE_PX);
-            let in_left_zone =
-                resp.interact_pointer_pos().is_some_and(|p| p.x <= note_rect.left() + RESIZE_ZONE_PX);
-            app.bethoven.drag = Some(if in_right_zone {
+            let start_pos = resp.interact_pointer_pos();
+            app.bethoven.drag = Some(if start_pos.is_some_and(in_right_zone) {
                 Drag::ResizeRight { id: note.id, accum_ticks: 0.0 }
-            } else if in_left_zone {
+            } else if start_pos.is_some_and(in_left_zone) {
                 Drag::ResizeLeft { id: note.id, accum_ticks: 0.0 }
             } else {
                 Drag::Move { ids: app.bethoven.selection.iter().copied().collect(), accum_ticks: 0.0, accum_pitch: 0.0 }
@@ -234,7 +257,7 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             }
             if let Some((dt, dp, ids)) = move_apply {
                 if let Some(section) = app.bethoven.active_section_mut(&mut project) {
-                    section.move_notes(&ids, dt, dp);
+                    section.move_notes_by_row(&ids, dt, dp, &rows);
                 }
                 app.bethoven.mark_dirty();
             }
@@ -251,27 +274,31 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
         }
     }
 
-    // Background: click-to-add, Shift+drag marquee, plain/Shift wheel to
-    // pan the view when no selected note under the cursor consumed it.
-    if !shift
-        && grid_response.clicked()
-        && let Some(pos) = grid_response.interact_pointer_pos()
-        && pos.x >= grid_left
-    {
-        let tick = melody::snap_ticks(tick_for_x(pos.x) as i64);
-        let row_index = ((pos.y - rect.top() + scroll_y) / ROW_HEIGHT).floor();
-        if row_index >= 0.0 && (row_index as usize) < rows.len() {
-            let pitch = rows[row_index as usize];
-            let (default_len, default_inst) = app
-                .bethoven
-                .active_melody(&project)
-                .map(|m| (m.default_note_length_ticks, m.default_instrument))
-                .unwrap_or((PPQ, Instrument::Piano));
-            if let Some(section) = app.bethoven.active_section_mut(&mut project) {
-                let id = section.add_note(pitch, tick, default_len, default_inst);
-                app.bethoven.selection = std::iter::once(id).collect();
+    // Background click: with a selection active, the first click on empty
+    // space only clears it (so a stray click while notes are selected can't
+    // accidentally drop a new note on top of them) — a second click, now
+    // with nothing selected, actually places a note.
+    if !shift && grid_response.clicked() {
+        if !app.bethoven.selection.is_empty() {
+            app.bethoven.selection.clear();
+        } else if let Some(pos) = grid_response.interact_pointer_pos()
+            && pos.x >= grid_left
+        {
+            let tick = melody::snap_ticks(tick_for_x(pos.x) as i64);
+            let row_index = ((pos.y - rect.top() + scroll_y) / ROW_HEIGHT).floor();
+            if row_index >= 0.0 && (row_index as usize) < rows.len() {
+                let pitch = rows[row_index as usize];
+                let (default_len, default_inst) = app
+                    .bethoven
+                    .active_melody(&project)
+                    .map(|m| (m.default_note_length_ticks, m.default_instrument))
+                    .unwrap_or((PPQ, Instrument::Piano));
+                if let Some(section) = app.bethoven.active_section_mut(&mut project) {
+                    let id = section.add_note(pitch, tick, default_len, default_inst);
+                    app.bethoven.selection = std::iter::once(id).collect();
+                }
+                app.bethoven.mark_dirty();
             }
-            app.bethoven.mark_dirty();
         }
     }
 
