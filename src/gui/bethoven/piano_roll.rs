@@ -430,7 +430,13 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                 app.bethoven.selection.insert(note.id);
             }
             app.bethoven.record_undo(&project);
-            let start_pos = resp.interact_pointer_pos();
+            // The *press* position, not wherever the pointer has drifted to
+            // by the time egui decides this is actually a drag (it only
+            // commits past a small movement threshold) — on a short note
+            // those few pixels of drift could already be enough to land in
+            // a different zone than the one you actually pressed down in,
+            // flipping move/resize right at the start of the gesture.
+            let start_pos = ui.ctx().input(|i| i.pointer.press_origin());
             app.bethoven.drag = Some(if start_pos.is_some_and(in_right_zone) {
                 Drag::ResizeRight { id: note.id, accum_ticks: 0.0 }
             } else if start_pos.is_some_and(in_left_zone) {
