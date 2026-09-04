@@ -433,6 +433,14 @@ pub fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     if (delete || cut) && !selected.is_empty() {
         if cut && let Some(section) = app.bethoven.active_section(&project) {
             app.bethoven.clipboard = selected.iter().filter_map(|id| section.note(*id).cloned()).collect();
+            // egui-winit only emits `Event::Paste` when the OS clipboard
+            // already holds non-empty text (it reads the clipboard itself
+            // to build the event) — since our actual clipboard data lives
+            // in `app.bethoven.clipboard`, not the OS clipboard, Ctrl+V
+            // would otherwise silently do nothing on a machine whose OS
+            // clipboard happens to be empty. The text's content is never
+            // read back; it only exists to make the platform fire the event.
+            ui.ctx().copy_text("rakunator-bethoven-notes".to_string());
         }
         app.bethoven.record_undo(&project);
         if let Some(section) = app.bethoven.active_section_mut(&mut project) {
@@ -443,6 +451,7 @@ pub fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     } else if copy && !selected.is_empty() {
         if let Some(section) = app.bethoven.active_section(&project) {
             app.bethoven.clipboard = selected.iter().filter_map(|id| section.note(*id).cloned()).collect();
+            ui.ctx().copy_text("rakunator-bethoven-notes".to_string());
         }
     } else if paste && !app.bethoven.clipboard.is_empty() {
         let earliest = app.bethoven.clipboard.iter().map(|n| n.start_tick).min().unwrap_or(0);
