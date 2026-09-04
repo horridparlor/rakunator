@@ -816,6 +816,27 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         return;
     }
 
+    if jump_start || jump_end {
+        // Shift+Left/Right always sets the timeline selection point (the
+        // playhead), never moves a clip — deselect any selected clips
+        // first instead of jumping them to the start/end.
+        project.selection.clear();
+        project.selected_tracks.clear();
+        if jump_start {
+            app.engine.seek(0);
+        } else {
+            let content_end = project
+                .tracks
+                .iter()
+                .flat_map(|t| &t.clips)
+                .map(|c| c.end_sample())
+                .max()
+                .unwrap_or(0);
+            app.engine.seek(content_end);
+        }
+        return;
+    }
+
     let selected_ids: Vec<ClipId> = project.selection.iter().copied().collect();
     if selected_ids.is_empty() {
         // With no clip selected, these move the playhead itself instead of
@@ -846,17 +867,6 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
             if let Some(edge) = blocking_edge {
                 app.timeline.flash_snap(edge);
             }
-        } else if jump_start {
-            app.engine.seek(0);
-        } else if jump_end {
-            let content_end = project
-                .tracks
-                .iter()
-                .flat_map(|t| &t.clips)
-                .map(|c| c.end_sample())
-                .max()
-                .unwrap_or(0);
-            app.engine.seek(content_end);
         }
         return;
     }
@@ -921,28 +931,6 @@ fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
                         app.timeline.flash_snap(edge);
                     }
                 }
-            }
-        }
-    } else if jump_start {
-        // Shift+Left: jump the selected clip(s) to the very beginning.
-        for id in &selected_ids {
-            if let Some(track_id) = project.find_clip_track(*id) {
-                project.move_clip(*id, track_id, 0);
-            }
-        }
-    } else if jump_end {
-        // Shift+Right: jump the selected clip(s) to right after the end
-        // of the project's last clip.
-        let content_end = project
-            .tracks
-            .iter()
-            .flat_map(|t| &t.clips)
-            .map(|c| c.end_sample())
-            .max()
-            .unwrap_or(0);
-        for id in &selected_ids {
-            if let Some(track_id) = project.find_clip_track(*id) {
-                project.move_clip(*id, track_id, content_end);
             }
         }
     }
