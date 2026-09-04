@@ -2,11 +2,12 @@
 //! scale/root picker, tempo, play/pause, and the per-selection instrument
 //! picker.
 
-use super::{NewSectionDraft, RakunatorApp};
+use super::{ExportDraft, NewSectionDraft, RakunatorApp};
 use crate::bethoven::melody::{self, Melody};
 use crate::bethoven::scales;
 use crate::bethoven::Instrument;
 use crate::project::Project;
+use std::collections::HashSet;
 
 pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
     // A little breathing room between the toolbar's rows, and a left inset
@@ -33,10 +34,14 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
             ui.horizontal_wrapped(|ui| {
                 draw_instrument_picker(ui, app, &mut project);
             });
+            ui.horizontal_wrapped(|ui| {
+                draw_note_track_controls(ui, app, &mut project);
+            });
         });
     });
     let ctx = ui.ctx().clone();
     draw_new_section_popup(&ctx, app);
+    draw_export_popup(&ctx, app);
 }
 
 fn draw_melody_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut Project) {
@@ -105,22 +110,24 @@ fn draw_melody_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut
     }
 
     if ui
-        .button("Export to Project Track")
-        .on_hover_text("Renders the current section and adds it as a new, fully editable clip on a new track.")
+        .button("Export")
+        .on_hover_text(
+            "Renders the current section and adds it as a new, fully editable clip on a new track \u{2014} \
+             pick which instruments to include first.",
+        )
         .clicked()
     {
-        let melody_name = app.bethoven.active_melody(project).map(|m| m.name.clone());
-        let bpm = app.bethoven.active_melody(project).map(|m| m.bpm).unwrap_or(120.0);
-        let section = app.bethoven.active_section(project).cloned();
-        if let (Some(melody_name), Some(section)) = (melody_name, section) {
-            let samples = melody::render_section(&section, bpm, app.sample_rate_hz);
-            let name = format!("{} - {}", melody_name, section.name);
-            let track_id = project.add_track();
-            if let Some(track) = project.track_mut(track_id) {
-                track.name = name.clone();
-            }
-            project.add_clip_channels(track_id, name, 0, samples, 2);
-        }
+        open_export_draft(app, project, false);
+    }
+    if ui
+        .button("Export Instruments")
+        .on_hover_text(
+            "Renders each instrument actually used in the current section onto its own new track \u{2014} \
+             pick which ones first.",
+        )
+        .clicked()
+    {
+        open_export_draft(app, project, true);
     }
 
     // Right-aligned within this row (added last, so it claims whatever
@@ -162,7 +169,8 @@ fn draw_transport_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &
 
     let icon = if app.bethoven.is_playing() { "\u{23f8}" } else { "\u{25b6}" };
     if ui.button(icon).on_hover_text("Play/Pause (Space)").clicked() {
-        app.bethoven.toggle_playback();
+        let sample_rate_hz = app.sample_rate_hz;
+        app.bethoven.toggle_playback(sample_rate_hz, project);
     }
 }
 
@@ -345,5 +353,158 @@ fn draw_new_section_popup(ctx: &egui::Context, app: &mut RakunatorApp) {
         app.bethoven.mark_dirty();
     } else if cancel {
         app.bethoven.new_section_draft = None;
+    }
+}
+
+/// Mute/Solo toggles, one per instrument actually used anywhere in the
+/// active melody (across all its sections) — same "M"/"S" toggle style as
+/// the main timeline's track headers. Applies to this melody's own preview
+/// playback (immediately) and is also the default instrument selection the
+/// next time an export dialog is opened, e.g. muting the drums used as a
+/// metronome while composing keeps them out of both.
+fn draw_note_track_controls(ui: &mut egui::Ui, app: &mut RakunatorApp, project: &mut Project) {
+    let used = app.bethoven.active_melody(project).map(|m| m.used_instruments()).unwrap_or_default();
+    if used.is_empty() {
+        return;
+    }
+    ui.label("Note Tracks:");
+    for inst in used {
+        let color = super::piano_roll::instrument_color(inst);
+        ui.label(egui::RichText::new(inst.name()).color(color));
+        let mut muted = app.bethoven.active_melody(project).is_some_and(|m| m.muted_instruments.contains(&inst));
+        let mut soloed = app.bethoven.active_melody(project).is_some_and(|m| m.soloed_instruments.contains(&inst));
+        if ui.toggle_value(&mut muted, "M").on_hover_text("Mute this instrument").clicked() {
+            if let Some(melody) = app.bethoven.active_melody_mut(project) {
+                if muted {
+                    melody.muted_instruments.insert(inst);
+                } else {
+                    melody.muted_instruments.remove(&inst);
+                }
+            }
+            app.bethoven.mark_dirty();
+        }
+        if ui.toggle_value(&mut soloed, "S").on_hover_text("Solo this instrument").clicked() {
+            if let Some(melody) = app.bethoven.active_melody_mut(project) {
+                if soloed {
+                    melody.soloed_instruments.insert(inst);
+                } else {
+                    melody.soloed_instruments.remove(&inst);
+                }
+            }
+            app.bethoven.mark_dirty();
+        }
+        ui.add_space(6.0);
+    }
+}
+
+/// Opens the export instrument-selection popup for either "Export"
+/// (`multi_track = false`, one mixed-down track) or "Export Instruments"
+/// (`multi_track = true`, one track per instrument) — defaults every
+/// used-in-this-section instrument to checked unless it's currently muted
+/// (or solo is active elsewhere and it isn't soloed), so the mute/solo row
+/// above doubles as a quick way to exclude something (like a metronome
+/// drum track) from export too.
+fn open_export_draft(app: &mut RakunatorApp, project: &Project, multi_track: bool) {
+    let Some(section) = app.bethoven.active_section(project) else { return };
+    let used = section.used_instruments();
+    if used.is_empty() {
+        return;
+    }
+    let melody = app.bethoven.active_melody(project);
+    let checked: HashSet<Instrument> =
+        used.iter().copied().filter(|inst| melody.map(|m| m.is_instrument_audible(*inst)).unwrap_or(true)).collect();
+    app.bethoven.export_draft = Some(ExportDraft { multi_track, used, checked, focus_export_button: true });
+}
+
+/// The instrument-selection popup opened by "Export"/"Export Instruments"
+/// above — same focus-the-primary-button-so-Enter-works pattern as the main
+/// export dialog's own "Export"/"Overwrite" buttons.
+fn draw_export_popup(ctx: &egui::Context, app: &mut RakunatorApp) {
+    if app.bethoven.export_draft.is_none() {
+        return;
+    }
+    let multi_track = app.bethoven.export_draft.as_ref().is_some_and(|d| d.multi_track);
+    let title = if multi_track { "Export Instruments" } else { "Export" };
+    let mut do_export = false;
+    let mut cancel = false;
+    egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
+        let Some(draft) = app.bethoven.export_draft.as_mut() else { return };
+        ui.label(if draft.multi_track {
+            "Each checked instrument becomes its own new track."
+        } else {
+            "The checked instruments are mixed down onto one new track."
+        });
+        ui.separator();
+        for inst in draft.used.clone() {
+            let color = super::piano_roll::instrument_color(inst);
+            let mut checked = draft.checked.contains(&inst);
+            if ui.checkbox(&mut checked, egui::RichText::new(inst.name()).color(color)).changed() {
+                if checked {
+                    draft.checked.insert(inst);
+                } else {
+                    draft.checked.remove(&inst);
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.button("All").clicked() {
+                draft.checked = draft.used.iter().copied().collect();
+            }
+            if ui.button("None").clicked() {
+                draft.checked.clear();
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let export_resp = ui.add_enabled(!draft.checked.is_empty(), egui::Button::new("Export"));
+            if std::mem::take(&mut draft.focus_export_button) {
+                export_resp.request_focus();
+            }
+            if export_resp.clicked() {
+                do_export = true;
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    });
+
+    if do_export {
+        let Some(draft) = app.bethoven.export_draft.take() else { return };
+        perform_export(app, draft);
+    } else if cancel {
+        app.bethoven.export_draft = None;
+    }
+}
+
+/// Actually renders and adds the new track(s) for a confirmed export
+/// popup — one mixed-down track (checked instruments only) for "Export",
+/// or one track per checked instrument for "Export Instruments".
+fn perform_export(app: &mut RakunatorApp, draft: ExportDraft) {
+    let mut project = app.project.lock().unwrap();
+    let melody_name = app.bethoven.active_melody(&project).map(|m| m.name.clone());
+    let bpm = app.bethoven.active_melody(&project).map(|m| m.bpm).unwrap_or(120.0);
+    let section = app.bethoven.active_section(&project).cloned();
+    let (Some(melody_name), Some(section)) = (melody_name, section) else { return };
+
+    let add_track = |project: &mut Project, name: String, samples: Vec<f32>| {
+        let track_id = project.add_track();
+        if let Some(track) = project.track_mut(track_id) {
+            track.name = name.clone();
+        }
+        project.add_clip_channels(track_id, name, 0, samples, 2);
+    };
+
+    if draft.multi_track {
+        for inst in draft.used.iter().copied().filter(|i| draft.checked.contains(i)) {
+            let samples = melody::render_section_filtered(&section, bpm, app.sample_rate_hz, |i| i == inst);
+            let name = format!("{} - {} - {}", melody_name, section.name, inst.name());
+            add_track(&mut project, name, samples);
+        }
+    } else {
+        let checked = draft.checked.clone();
+        let samples = melody::render_section_filtered(&section, bpm, app.sample_rate_hz, |i| checked.contains(&i));
+        let name = format!("{} - {}", melody_name, section.name);
+        add_track(&mut project, name, samples);
     }
 }

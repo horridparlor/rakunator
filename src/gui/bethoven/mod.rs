@@ -36,6 +36,24 @@ impl Default for NewSectionDraft {
     }
 }
 
+/// A pending export's not-yet-confirmed instrument selection, edited in a
+/// small popup before "Export" actually renders anything — opened by
+/// either the "Export" or "Export Instruments" button (see `toolbar`).
+pub(super) struct ExportDraft {
+    /// `true` for "Export Instruments" (each checked instrument becomes its
+    /// own new track); `false` for "Export" (one new track, mixing down
+    /// only the checked instruments).
+    pub(super) multi_track: bool,
+    /// Instruments actually used in the section being exported, in
+    /// `Instrument::ALL` order (see `Section::used_instruments`).
+    pub(super) used: Vec<crate::bethoven::Instrument>,
+    pub(super) checked: HashSet<crate::bethoven::Instrument>,
+    /// One-shot, same idea as `export_dialog::ExportDialogState`'s own
+    /// `focus_export_button`: gives the "Export" button keyboard focus the
+    /// first frame the popup is open, so Enter exports immediately.
+    pub(super) focus_export_button: bool,
+}
+
 pub struct BethovenState {
     pub open: bool,
     /// Whether Bethoven is the thing the user is currently interacting
@@ -69,6 +87,7 @@ pub struct BethovenState {
     play_start_scroll_x: Option<f32>,
     drag: Option<piano_roll::Drag>,
     new_section_draft: Option<NewSectionDraft>,
+    pub(super) export_draft: Option<ExportDraft>,
     renaming_melody: Option<String>,
     renaming_section: Option<String>,
     /// Where a click on the ruler, or a keyboard nudge, snapped the
@@ -111,6 +130,7 @@ impl BethovenState {
             play_start_scroll_x: None,
             drag: None,
             new_section_draft: None,
+            export_draft: None,
             renaming_melody: None,
             renaming_section: None,
             snap_flash: None,
@@ -240,7 +260,16 @@ impl BethovenState {
     /// or nudging with the arrow keys, moves that resting spot (see
     /// `piano_roll::{nudge_playhead, jump_playhead}` and the ruler's
     /// click-to-seek) the same way seeking the main timeline does.
-    fn toggle_playback(&mut self) {
+    ///
+    /// Rebuilds the preview buffer synchronously *before* starting
+    /// playback (rather than just marking it dirty for the next
+    /// `refresh_preview`, which runs later the same frame): starting the
+    /// audio thread first and only swapping in the fresh buffer afterward
+    /// left a brief window where it could mix whatever stale clip was
+    /// there before, which is inaudible for a note starting anywhere past
+    /// that window but landed as an audible click/pop on a note starting
+    /// right at tick 0 — exactly where playback begins.
+    fn toggle_playback(&mut self, sample_rate_hz: u32, project: &Project) {
         if self.preview_engine.is_playing() {
             self.preview_engine.pause();
             if let Some(pos) = self.play_start_sample.take() {
@@ -253,6 +282,7 @@ impl BethovenState {
             self.play_start_sample = Some(self.preview_engine.position());
             self.play_start_scroll_x = Some(self.scroll_x);
             self.mark_dirty();
+            self.rebuild_preview_buffer(sample_rate_hz, project);
             self.preview_engine.play();
         }
     }
@@ -263,13 +293,25 @@ impl BethovenState {
         if !self.dirty {
             return;
         }
+        let project = main_project.lock().unwrap();
+        self.rebuild_preview_buffer(sample_rate_hz, &project);
+    }
+
+    /// Does the actual rebuild, given an already-locked `Project` — split
+    /// out from `refresh_preview` so `toggle_playback` can call it
+    /// synchronously without locking `main_project` itself (its callers
+    /// already hold that lock in some paths, and `Mutex` isn't reentrant).
+    /// Respects the active melody's mute/solo state, same as export.
+    fn rebuild_preview_buffer(&mut self, sample_rate_hz: u32, project: &Project) {
         self.dirty = false;
-        let samples = {
-            let project = main_project.lock().unwrap();
-            let bpm = self.active_melody(&project).map(|m| m.bpm).unwrap_or(120.0);
-            self.active_section(&project).map(|s| melody::render_section(s, bpm, sample_rate_hz))
-        };
-        let Some(samples) = samples else { return };
+        let Some(melody) = self.active_melody(project) else { return };
+        let bpm = melody.bpm;
+        let muted = melody.muted_instruments.clone();
+        let soloed = melody.soloed_instruments.clone();
+        let Some(section) = self.active_section(project) else { return };
+        let samples = melody::render_section_filtered(section, bpm, sample_rate_hz, |inst| {
+            if !soloed.is_empty() { soloed.contains(&inst) } else { !muted.contains(&inst) }
+        });
         let mut preview = self.preview_project.lock().unwrap();
         if let Some(track) = preview.track_mut(self.preview_track) {
             track.clips.clear();
@@ -356,7 +398,9 @@ pub fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
         });
 
     if space {
-        app.bethoven.toggle_playback();
+        let project_arc = Arc::clone(&app.project);
+        let project = project_arc.lock().unwrap();
+        app.bethoven.toggle_playback(app.sample_rate_hz, &project);
     }
 
     if nudge_left || nudge_right {
@@ -403,11 +447,18 @@ pub fn handle_shortcuts(ui: &egui::Ui, app: &mut RakunatorApp) {
     } else if paste && !app.bethoven.clipboard.is_empty() {
         let earliest = app.bethoven.clipboard.iter().map(|n| n.start_tick).min().unwrap_or(0);
         let notes = app.bethoven.clipboard.clone();
+        // Paste at the playhead (wherever the ruler was last clicked, or
+        // the transport currently sits) instead of always snapping the
+        // clipboard's earliest note back to tick 0 — keeps the copied
+        // notes' relative shape, just anchored at the paste point.
+        let bpm = app.bethoven.active_melody(&project).map(|m| m.bpm).unwrap_or(120.0);
+        let paste_at_tick =
+            melody::samples_to_ticks(app.bethoven.preview_engine.position(), bpm, app.sample_rate_hz);
         app.bethoven.record_undo(&project);
         if let Some(section) = app.bethoven.active_section_mut(&mut project) {
             let mut new_selection = HashSet::new();
             for note in notes {
-                let offset = note.start_tick.saturating_sub(earliest);
+                let offset = paste_at_tick + note.start_tick.saturating_sub(earliest);
                 let id = section.add_note(note.pitch, offset, note.length_ticks, note.instrument);
                 if let Some(n) = section.notes.iter_mut().find(|n| n.id == id) {
                     n.gain = note.gain;

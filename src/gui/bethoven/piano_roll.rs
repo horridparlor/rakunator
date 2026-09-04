@@ -26,7 +26,10 @@ const PAN_STEP: i32 = 5;
 const BAR_TICKS: u32 = melody::BEATS_PER_BAR * PPQ;
 const PIANO_RULER_HEIGHT: f32 = 20.0;
 const MIN_PX_PER_TICK: f32 = 0.02;
-const MAX_PX_PER_TICK: f32 = 4.0;
+/// Raised well past a single 16th-note grid step filling the whole visible
+/// width — at 4.0 the closest zoom still couldn't get much nearer to short
+/// notes for precise editing.
+const MAX_PX_PER_TICK: f32 = 40.0;
 /// How close (in pixels) a moved/resized note edge, or a ruler click, has
 /// to land to another note's edge to snap to it. Smaller than the main
 /// timeline's own `SNAP_PX` (8.0) — notes sit much closer together than
@@ -101,6 +104,27 @@ fn snap_tick(candidate: i64, targets: &[i64], px_per_tick: f32) -> i64 {
 
 fn nudge_ticks(px_per_tick: f32) -> i64 {
     ((NUDGE_PIXELS / px_per_tick).round() as i64).max(1)
+}
+
+/// Below this many pixels, halving the drag step again would make each
+/// step too fine to land deliberately — used both as the floor for
+/// `grid_step_ticks` and to decide when it's still worth halving further.
+const MIN_DRAG_STEP_PX: f32 = 6.0;
+
+/// The tick step a note-move/resize drag snaps to and can shrink a note
+/// down to, adapted to the current zoom: starts at the standard 16th-note
+/// grid (`GRID_TICKS`, same step used at every zoom level before this),
+/// and halves — down to a single tick, the finest possible — for every
+/// doubling of zoom past the point where a 16th note already spans a
+/// comfortable drag distance. At the default zoom level this still lands
+/// on `GRID_TICKS`, so behavior there is unchanged; only zooming in closer
+/// unlocks finer positioning and shorter notes than a 16th note.
+fn grid_step_ticks(px_per_tick: f32) -> u32 {
+    let mut step = GRID_TICKS;
+    while step > 1 && (step / 2) as f32 * px_per_tick >= MIN_DRAG_STEP_PX {
+        step /= 2;
+    }
+    step.max(1)
 }
 
 /// Left/Right (no Shift): nudges the preview playhead by one `nudge_ticks`
@@ -455,7 +479,7 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                     Drag::Move { accum_ticks, accum_pitch, ids } => {
                         *accum_ticks += delta.x / px_per_tick;
                         *accum_pitch += -delta.y / ROW_HEIGHT;
-                        let step = GRID_TICKS as f32;
+                        let step = grid_step_ticks(px_per_tick) as f32;
                         let steps = (*accum_ticks / step).round();
                         let pitch_steps = accum_pitch.round();
                         if steps != 0.0 || pitch_steps != 0.0 {
@@ -484,28 +508,30 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                     }
                     Drag::ResizeRight { id, accum_ticks } => {
                         *accum_ticks += delta.x / px_per_tick;
-                        let step = GRID_TICKS as f32;
+                        let step_ticks = grid_step_ticks(px_per_tick);
+                        let step = step_ticks as f32;
                         let steps = (*accum_ticks / step).round();
                         if steps != 0.0 {
                             *accum_ticks -= steps * step;
-                            let mut dt = steps as i64 * GRID_TICKS as i64;
+                            let mut dt = steps as i64 * step_ticks as i64;
                             let candidate_end = note.start_tick as i64 + note.length_ticks as i64 + dt;
                             let snapped_end = snap_tick(candidate_end, &edge_targets, px_per_tick);
                             if snapped_end != candidate_end {
                                 dt += snapped_end - candidate_end;
                                 snap_hit = Some(snapped_end);
                             }
-                            let new_len = (note.length_ticks as i64 + dt).max(GRID_TICKS as i64) as u32;
+                            let new_len = (note.length_ticks as i64 + dt).max(step_ticks as i64) as u32;
                             resize_apply = Some((*id, note.start_tick, new_len));
                         }
                     }
                     Drag::ResizeLeft { id, accum_ticks } => {
                         *accum_ticks += delta.x / px_per_tick;
-                        let step = GRID_TICKS as f32;
+                        let step_ticks = grid_step_ticks(px_per_tick);
+                        let step = step_ticks as f32;
                         let steps = (*accum_ticks / step).round();
                         if steps != 0.0 {
                             *accum_ticks -= steps * step;
-                            let mut dt = steps as i64 * GRID_TICKS as i64;
+                            let mut dt = steps as i64 * step_ticks as i64;
                             let candidate_start = note.start_tick as i64 + dt;
                             let snapped_start = snap_tick(candidate_start, &edge_targets, px_per_tick);
                             if snapped_start != candidate_start {
@@ -513,7 +539,7 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
                                 snap_hit = Some(snapped_start);
                             }
                             let new_start = (note.start_tick as i64 + dt).max(0) as u32;
-                            let new_len = (note.length_ticks as i64 - dt).max(GRID_TICKS as i64) as u32;
+                            let new_len = (note.length_ticks as i64 - dt).max(step_ticks as i64) as u32;
                             resize_apply = Some((*id, new_start, new_len));
                         }
                     }
@@ -560,8 +586,23 @@ pub(super) fn draw(ui: &mut egui::Ui, app: &mut RakunatorApp) {
     // Background click: with a selection active, the first click on empty
     // space only clears it (so a stray click while notes are selected can't
     // accidentally drop a new note on top of them) — a second click, now
-    // with nothing selected, actually places a note.
+    // with nothing selected, actually places a note. Either way, the click
+    // also moves the preview playhead to that tick (snapping to a nearby
+    // note edge, same as the ruler's own click-to-seek) — same as the main
+    // timeline's "click empty lane space repositions the playhead", and
+    // what makes Ctrl+V paste wherever was last clicked instead of only
+    // wherever the ruler was last clicked.
     if !shift && grid_response.clicked() {
+        if let Some(pos) = grid_response.interact_pointer_pos()
+            && pos.x >= grid_left
+        {
+            let raw_tick = tick_for_x(pos.x).max(0.0) as i64;
+            let snapped = snap_tick(raw_tick, &edge_targets, px_per_tick).max(0);
+            app.bethoven.preview_engine.seek(melody::ticks_to_samples(snapped as u32, bpm, app.sample_rate_hz));
+            if snapped != raw_tick {
+                app.bethoven.snap_flash = Some((snapped as u32, Instant::now()));
+            }
+        }
         if !app.bethoven.selection.is_empty() {
             app.bethoven.selection.clear();
         } else if let Some(pos) = grid_response.interact_pointer_pos()
@@ -691,4 +732,35 @@ fn draw_scrollbar(ui: &mut egui::Ui, app: &mut RakunatorApp, rect: Rect, content
     let thumb_color =
         if response.dragged() { ui.visuals().widgets.active.bg_fill } else { ui.visuals().widgets.inactive.bg_fill };
     painter.rect_filled(thumb_rect, 3.0, thumb_color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_step_ticks_stays_at_a_16th_note_at_default_zoom() {
+        // 0.2 px/tick is `BethovenState::new`'s starting zoom — behavior
+        // there must stay exactly what it was before finer subdivisions
+        // were introduced.
+        assert_eq!(grid_step_ticks(0.2), GRID_TICKS);
+    }
+
+    #[test]
+    fn grid_step_ticks_halves_down_to_a_single_tick_as_zoom_increases() {
+        // The finest step in {24, 12, 6, 3, 1} whose on-screen width
+        // (step * px_per_tick) is still >= MIN_DRAG_STEP_PX (6px).
+        assert_eq!(grid_step_ticks(0.2), 24);
+        assert_eq!(grid_step_ticks(1.0), 6);
+        assert_eq!(grid_step_ticks(2.0), 3);
+        assert_eq!(grid_step_ticks(4.0), 3);
+        assert_eq!(grid_step_ticks(6.0), 1);
+        assert_eq!(grid_step_ticks(MAX_PX_PER_TICK), 1);
+    }
+
+    #[test]
+    fn grid_step_ticks_never_returns_zero() {
+        assert!(grid_step_ticks(MIN_PX_PER_TICK) >= 1);
+        assert!(grid_step_ticks(MAX_PX_PER_TICK) >= 1);
+    }
 }

@@ -339,7 +339,7 @@ fn help_sections() -> &'static [HelpSection] {
                     "Drag a note's body / left / right edge",
                     "Move the selection, or resize that note from that edge (cursor changes to show which) — snaps to other notes' edges, drawing a yellow alignment line, the same as the main timeline",
                 ),
-                ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut / copy / paste the selected notes"),
+                ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut / copy the selected notes; paste them at the current playhead position"),
                 ("Ctrl+D, Delete, Backspace, or right-click", "Delete the selected notes"),
                 ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo note edits in the piano roll"),
                 (
@@ -370,12 +370,20 @@ fn help_sections() -> &'static [HelpSection] {
                 ),
                 ("Melody combo / New / Rename / Delete", "Save, switch between, or remove melodies saved with this project"),
                 (
-                    "Export to Project Track",
-                    "Render the current section onto a new, fully-editable track in the main project",
+                    "Export",
+                    "Pick which used instruments to include, then render the current section onto one new, fully-editable track in the main project",
+                ),
+                (
+                    "Export Instruments",
+                    "Pick which used instruments to include, then render each of them onto its own new track in the main project",
                 ),
                 (
                     "Set instrument (toolbar)",
                     "Assign Piano/Strings/Violin/Bass/Guitar/Synth/Lead/Sub/808/Drum/Snare/Hi-Hat/Cowbell to the selected notes",
+                ),
+                (
+                    "Note Tracks: M / S (toolbar)",
+                    "Mute or solo an instrument used in this melody, for both preview playback and as the export dialogs' default checkbox state",
                 ),
                 ("Fullscreen / Restore (toolbar)", "Toggle the Bethoven window between filling the screen and floating/resizable"),
             ],

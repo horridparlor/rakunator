@@ -104,6 +104,40 @@ fn project_round_trips_which_melody_and_section_were_last_open() {
 }
 
 #[test]
+fn project_round_trips_muted_and_soloed_instruments() {
+    let mut project = Project::new(48_000);
+    let mut melody = Melody::new(project.next_melody_id(), "M".to_string());
+    melody.muted_instruments.insert(Instrument::Drum);
+    melody.soloed_instruments.insert(Instrument::Piano);
+    let melody_id = melody.id;
+    project.melodies.push(melody);
+
+    let path = std::env::temp_dir().join(format!("rakunator_bethoven_mute_solo_{}.raku", std::process::id()));
+    save_project(&project, &path).expect("save should succeed");
+    let loaded = load_project(&path).expect("load should succeed");
+    let _ = std::fs::remove_file(&path);
+
+    let loaded_melody = loaded.melodies.iter().find(|m| m.id == melody_id).unwrap();
+    assert!(loaded_melody.muted_instruments.contains(&Instrument::Drum));
+    assert!(loaded_melody.soloed_instruments.contains(&Instrument::Piano));
+}
+
+#[test]
+fn loading_an_old_raku_file_with_no_mute_solo_fields_still_works() {
+    // Simulates a melody saved before mute/solo existed: no
+    // "muted_instruments"/"soloed_instruments" keys in the JSON.
+    let path = std::env::temp_dir().join(format!("rakunator_bethoven_legacy_mute_solo_{}.raku", std::process::id()));
+    let legacy_json = r#"{"sample_rate_hz":48000,"tracks":[],"melodies":[{"id":0,"name":"M","bpm":120.0,"sections":[],"default_note_length_ticks":96,"default_instrument":"Piano"}]}"#;
+    std::fs::write(&path, legacy_json).expect("write should succeed");
+
+    let loaded = load_project(&path).expect("load should succeed even without mute/solo fields");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(loaded.melodies[0].muted_instruments.is_empty());
+    assert!(loaded.melodies[0].soloed_instruments.is_empty());
+}
+
+#[test]
 fn export_to_project_track_produces_a_playable_clip() {
     let mut project = Project::new(48_000);
     let mut melody = Melody::new(0, "Export Me".to_string());

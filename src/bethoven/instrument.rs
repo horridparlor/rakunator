@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 use std::time::Duration;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Instrument {
     Piano,
     Strings,

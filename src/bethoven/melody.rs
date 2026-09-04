@@ -5,14 +5,23 @@
 use super::instrument::{render_note, Instrument};
 use crate::audio_engine::mix::pan_gains;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// Ticks per quarter note — fine enough grain for 16th-note snapping
 /// without needing floating point tick positions.
 pub const PPQ: u32 = 96;
 pub const BEATS_PER_BAR: u32 = 4;
-/// Grid/snap resolution: a 16th note.
+/// Grid/snap resolution: a 16th note. This is only the *default* — the
+/// piano roll's drag-move/resize snaps to progressively finer subdivisions
+/// of this once zoomed in close enough (see `piano_roll::grid_step_ticks`),
+/// which is why the model's own floor on a note's length is `MIN_NOTE_TICKS`
+/// (a single tick), not this.
 pub const GRID_TICKS: u32 = PPQ / 4;
+/// The shortest a note can ever be — one tick, i.e. 1/96th of a quarter
+/// note — just enough to keep a note from collapsing to zero/negative
+/// length; not a musical grid step in its own right.
+pub const MIN_NOTE_TICKS: u32 = 1;
 pub const DEFAULT_SECTION_BARS: u32 = 8;
 
 /// Rounds `ticks` down to the nearest grid step (never below one step).
@@ -91,7 +100,7 @@ impl Section {
             id,
             pitch,
             start_tick,
-            length_ticks: length_ticks.max(GRID_TICKS),
+            length_ticks: length_ticks.max(MIN_NOTE_TICKS),
             instrument,
             gain: 1.0,
             pan: 0,
@@ -145,7 +154,7 @@ impl Section {
     pub fn resize_note(&mut self, id: u32, new_start_tick: u32, new_length_ticks: u32) {
         if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
             note.start_tick = new_start_tick;
-            note.length_ticks = new_length_ticks.max(GRID_TICKS);
+            note.length_ticks = new_length_ticks.max(MIN_NOTE_TICKS);
         }
     }
 
@@ -195,6 +204,13 @@ impl Section {
             note.pan = 0;
         }
     }
+
+    /// Which instruments have at least one note in this section, in
+    /// `Instrument::ALL` order — used to populate the export dialogs'
+    /// instrument checklists ("actually used" rather than all 13).
+    pub fn used_instruments(&self) -> Vec<Instrument> {
+        Instrument::ALL.iter().copied().filter(|inst| self.notes.iter().any(|n| n.instrument == *inst)).collect()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -213,6 +229,18 @@ pub struct Melody {
     /// files saved before this existed.
     #[serde(default)]
     pub last_section_id: Option<u32>,
+    /// Instruments muted for this melody's own preview playback and
+    /// export — e.g. muting the drums used as a metronome while composing
+    /// so they're silent in playback and unchecked by default when
+    /// exporting. Overridden by `soloed_instruments` whenever that's
+    /// non-empty (see `is_instrument_audible`). Absent from `.raku` files
+    /// saved before this existed.
+    #[serde(default)]
+    pub muted_instruments: HashSet<Instrument>,
+    /// Instruments soloed for this melody — when non-empty, only these
+    /// play/export regardless of `muted_instruments`.
+    #[serde(default)]
+    pub soloed_instruments: HashSet<Instrument>,
 }
 
 impl Melody {
@@ -225,6 +253,8 @@ impl Melody {
             default_note_length_ticks: PPQ,
             default_instrument: Instrument::Piano,
             last_section_id: None,
+            muted_instruments: HashSet::new(),
+            soloed_instruments: HashSet::new(),
         };
         let id = melody.add_section("Section 1".to_string(), 0, 0, bars_to_ticks(DEFAULT_SECTION_BARS));
         melody.last_section_id = Some(id);
@@ -248,6 +278,28 @@ impl Melody {
     pub fn section_mut(&mut self, id: u32) -> Option<&mut Section> {
         self.sections.iter_mut().find(|s| s.id == id)
     }
+
+    /// Whether `instrument` should be heard/exported right now: soloing
+    /// anything makes it (and only it/its solo-siblings) exclusively
+    /// audible, otherwise it's audible unless individually muted.
+    pub fn is_instrument_audible(&self, instrument: Instrument) -> bool {
+        if !self.soloed_instruments.is_empty() {
+            self.soloed_instruments.contains(&instrument)
+        } else {
+            !self.muted_instruments.contains(&instrument)
+        }
+    }
+
+    /// Which instruments have at least one note anywhere in this melody
+    /// (across all sections), in `Instrument::ALL` order — populates the
+    /// mute/solo "Note Tracks" row, which applies melody-wide.
+    pub fn used_instruments(&self) -> Vec<Instrument> {
+        Instrument::ALL
+            .iter()
+            .copied()
+            .filter(|inst| self.sections.iter().any(|s| s.notes.iter().any(|n| n.instrument == *inst)))
+            .collect()
+    }
 }
 
 /// Renders every note in `section` into one stereo (interleaved) buffer
@@ -256,9 +308,21 @@ impl Melody {
 /// the main mixer uses for mono tracks); anything hanging past the
 /// section's end is simply not written.
 pub fn render_section(section: &Section, bpm: f32, sample_rate_hz: u32) -> Vec<f32> {
+    render_section_filtered(section, bpm, sample_rate_hz, |_| true)
+}
+
+/// Like `render_section`, but only notes whose instrument passes `include`
+/// are rendered — used for melody-wide mute/solo during preview playback,
+/// and for the export dialogs' per-instrument checklists.
+pub fn render_section_filtered(
+    section: &Section,
+    bpm: f32,
+    sample_rate_hz: u32,
+    include: impl Fn(Instrument) -> bool,
+) -> Vec<f32> {
     let total_samples = ticks_to_samples(section.length_ticks, bpm, sample_rate_hz) as usize;
     let mut buf = vec![0.0f32; total_samples * 2];
-    for note in &section.notes {
+    for note in section.notes.iter().filter(|n| include(n.instrument)) {
         let start = ticks_to_samples(note.start_tick, bpm, sample_rate_hz) as usize;
         let dur_samples = ticks_to_samples(note.length_ticks, bpm, sample_rate_hz).max(1);
         let duration = Duration::from_secs_f64(dur_samples as f64 / sample_rate_hz as f64);
@@ -280,8 +344,7 @@ pub fn render_section(section: &Section, bpm: f32, sample_rate_hz: u32) -> Vec<f
 }
 
 /// Renders the whole melody: every section's mixdown, concatenated in
-/// order — used both by "Export to Project Track" and (for the active
-/// section alone) Bethoven's own preview playback.
+/// order.
 pub fn render_melody(melody: &Melody, sample_rate_hz: u32) -> Vec<f32> {
     let mut out = Vec::new();
     for section in &melody.sections {
@@ -315,6 +378,24 @@ mod tests {
 
         section.delete_notes(&[id]);
         assert!(section.notes.is_empty());
+    }
+
+    #[test]
+    fn resize_and_add_note_only_floor_at_a_single_tick_not_a_16th_note() {
+        // The piano roll's own drag snapping (`piano_roll::grid_step_ticks`)
+        // is what normally keeps a note at least a 16th note long at low
+        // zoom — the model itself must allow shorter, otherwise zooming in
+        // to resize a note below a 16th note gets silently clamped back up.
+        let mut section = Section::new(0, "S".into(), 0, 0, bars_to_ticks(4));
+        let id = section.add_note(60, 0, PPQ, Instrument::Piano);
+        section.resize_note(id, 0, 3);
+        assert_eq!(section.note(id).unwrap().length_ticks, 3);
+
+        let short_id = section.add_note(60, PPQ, 3, Instrument::Piano);
+        assert_eq!(section.note(short_id).unwrap().length_ticks, 3);
+
+        section.resize_note(id, 0, 0);
+        assert_eq!(section.note(id).unwrap().length_ticks, MIN_NOTE_TICKS);
     }
 
     #[test]
@@ -398,6 +479,54 @@ mod tests {
         section.add_note(60, 0, PPQ, Instrument::Piano);
         let buf = render_section(&section, 120.0, 48_000);
         assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn used_instruments_lists_only_instruments_with_notes() {
+        let mut section = Section::new(0, "S".into(), 0, 0, bars_to_ticks(1));
+        section.add_note(60, 0, PPQ, Instrument::Piano);
+        section.add_note(40, PPQ, PPQ, Instrument::Drum);
+        let used = section.used_instruments();
+        assert_eq!(used, vec![Instrument::Piano, Instrument::Drum]);
+
+        let mut melody = Melody::new(0, "M".into());
+        let melody_section_id = melody.sections[0].id;
+        *melody.section_mut(melody_section_id).unwrap() = section;
+        assert_eq!(melody.used_instruments(), vec![Instrument::Piano, Instrument::Drum]);
+    }
+
+    #[test]
+    fn is_instrument_audible_respects_mute_and_solo() {
+        let mut melody = Melody::new(0, "M".into());
+        assert!(melody.is_instrument_audible(Instrument::Drum));
+
+        melody.muted_instruments.insert(Instrument::Drum);
+        assert!(!melody.is_instrument_audible(Instrument::Drum));
+        assert!(melody.is_instrument_audible(Instrument::Piano));
+
+        // Soloing Piano overrides Drum's mute state entirely: only the
+        // soloed instrument is audible, regardless of what's muted.
+        melody.soloed_instruments.insert(Instrument::Piano);
+        assert!(melody.is_instrument_audible(Instrument::Piano));
+        assert!(!melody.is_instrument_audible(Instrument::Guitar));
+    }
+
+    #[test]
+    fn render_section_filtered_excludes_unwanted_instruments() {
+        let mut section = Section::new(0, "S".into(), 0, 0, bars_to_ticks(1));
+        section.add_note(60, 0, PPQ, Instrument::Piano);
+        section.add_note(60, 0, PPQ, Instrument::Drum);
+
+        let piano_only = render_section_filtered(&section, 120.0, 48_000, |i| i == Instrument::Piano);
+        let piano_alone = {
+            let mut s = Section::new(0, "S".into(), 0, 0, bars_to_ticks(1));
+            s.add_note(60, 0, PPQ, Instrument::Piano);
+            render_section(&s, 120.0, 48_000)
+        };
+        assert_eq!(piano_only, piano_alone);
+
+        let none = render_section_filtered(&section, 120.0, 48_000, |_| false);
+        assert!(none.iter().all(|&s| s == 0.0));
     }
 
     #[test]
